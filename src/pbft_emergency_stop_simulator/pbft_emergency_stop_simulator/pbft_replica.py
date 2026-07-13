@@ -589,26 +589,42 @@ class PBFTReplica(Node):
         self.status_publisher.publish(status)
 
     def _validate_configuration(self) -> None:
-        """Validate replica identity and PBFT parameters."""
-        minimum_replica_count = 3 * self.max_faulty + 1
+        """Validate replica identity and the supported PBFT configuration."""
+        if self.max_faulty < 0:
+            raise ValueError(
+                "max_faulty must be non-negative."
+            )
 
-        if self.replica_count < minimum_replica_count:
+        expected_replica_count = 3 * self.max_faulty + 1
+
+        # This simulator currently uses quorum formulas that assume
+        # the minimal PBFT configuration n = 3f + 1.
+        if self.replica_count != expected_replica_count:
             raise ValueError(
                 "Invalid PBFT configuration: "
                 f"n={self.replica_count}, "
                 f"f={self.max_faulty}. "
-                f"Required: n >= {minimum_replica_count}."
+                "This simulator currently requires "
+                f"n = 3f + 1 = {expected_replica_count}."
             )
 
         if not 0 <= self.node_id < self.replica_count:
             raise ValueError(
-                f"node_id={self.node_id} is outside the valid range."
+                f"node_id={self.node_id} is outside the valid range "
+                f"0..{self.replica_count - 1}."
             )
 
         if not 0 <= self.primary_id < self.replica_count:
             raise ValueError(
-                f"primary_id={self.primary_id} is outside the valid range."
+                f"primary_id={self.primary_id} is outside the valid range "
+                f"0..{self.replica_count - 1}."
             )
+
+        if self.current_view < 0:
+            raise ValueError(
+                "current_view must be non-negative."
+            )
+        
 
     def request_callback(self, message: PBFTMessage) -> None:
         """Validate a client REQUEST and publish PRE-PREPARE."""
