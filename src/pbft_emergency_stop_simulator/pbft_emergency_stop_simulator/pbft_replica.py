@@ -71,6 +71,9 @@ class PBFTReplica(Node):
         self.declare_parameter("commit_delay_sec", 4.0)
         self.declare_parameter("manual_view_change_target", -1)
         self.declare_parameter("manual_view_change_delay_sec", 2.0)
+        self.declare_parameter("enable_progress_timeout", False)
+        self.declare_parameter("progress_timeout_sec", 3.0)
+
 
 
 
@@ -89,7 +92,13 @@ class PBFTReplica(Node):
         self.max_faulty = int(
             self.get_parameter("max_faulty").value
         )
-        
+        self.enable_progress_timeout = bool(
+            self.get_parameter("enable_progress_timeout").value
+        )
+        self.progress_timeout_sec = float(
+            self.get_parameter("progress_timeout_sec").value
+        )
+
         self.is_byzantine = bool(
             self.get_parameter("is_byzantine").value
         )
@@ -112,6 +121,13 @@ class PBFTReplica(Node):
         self.manual_view_change_delay_sec = float(
             self.get_parameter("manual_view_change_delay_sec").value
         )
+
+        if self.progress_timeout_sec <= 0.0:
+            raise ValueError(
+                "progress_timeout_sec must be positive."
+            )
+
+
 
         if self.duplicate_message_count < 2:
             raise ValueError(
@@ -160,6 +176,7 @@ class PBFTReplica(Node):
             "wrong_view",
             "wrong_value",
             "invalid_sender",
+            "skip_pre_prepare",
         }
 
         if self.byzantine_behavior not in allowed_behaviors:
@@ -267,6 +284,14 @@ class PBFTReplica(Node):
         # Test-only timer used to invoke the same function that will
         # later be called by the real progress timeout.
         self.manual_view_change_timer = None
+
+
+        # Progress timeout used to detect a stalled PBFT instance.
+        self.progress_timeout_timer = None
+
+        # Request and view currently protected by the timer.
+        self.progress_timeout_request_id: str | None = None
+        self.progress_timeout_view: int | None = None
 
         # Publishers.
         self.pre_prepare_publisher = self.create_publisher(
@@ -383,13 +408,27 @@ class PBFTReplica(Node):
             f"is_byzantine={self.is_byzantine}, "
             f"byzantine_behavior={self.byzantine_behavior}, "
             f"prepare_delay_sec={self.prepare_delay_sec}, "
-            f"commit_delay_sec={self.commit_delay_sec}"
+            f"commit_delay_sec={self.commit_delay_sec},"
+            f", enable_progress_timeout="
+            f"{self.enable_progress_timeout}, "
+            f"progress_timeout_sec="
+            f"{self.progress_timeout_sec}"
         )
         
         self._publish_status(self.status_detail)
         
     
     
+
+    def _is_skip_pre_prepare_byzantine(
+        self,
+    ) -> bool:
+        """Return whether a faulty primary skips PRE-PREPARE."""
+        return (
+            self.is_byzantine
+            and self.byzantine_behavior == "skip_pre_prepare"
+        )    
+
     
     def _is_silent_byzantine(self) -> bool:
         """Return whether this replica simulates a silent fault."""
@@ -816,6 +855,11 @@ class PBFTReplica(Node):
         pre_prepare.emergency_stop = instance.emergency_stop
 
         self.pre_prepare_publisher.publish(pre_prepare)
+
+        self._arm_progress_timeout(
+            instance.request_id,
+            reason="primary published PRE-PREPARE",
+        )
 
         self.get_logger().info(
             "Published PRE-PREPARE: "
@@ -1333,12 +1377,24 @@ class PBFTReplica(Node):
 
     def request_callback(self, message: PBFTMessage) -> None:
         """Validate and cache a client REQUEST on every replica."""
+        was_already_cached = (
+            message.request_id in self.cached_client_requests
+        )
+
         instance = self._validate_and_cache_client_request(
             message
         )
 
         if instance is None:
             return
+
+        # A repeated client transmission must not indefinitely reset
+        # the progress timeout.
+        if not was_already_cached:
+            self._arm_progress_timeout(
+                message.request_id,
+                reason="new valid client REQUEST cached",
+            )
 
         # Every correct replica stores the request, but only the current
         # primary may assign a sequence number and start PRE-PREPARE.
@@ -1352,9 +1408,117 @@ class PBFTReplica(Node):
             )
             return
 
+        if self._is_skip_pre_prepare_byzantine():
+            self.processed_request_ids.add(
+                message.request_id
+            )
+
+            self.phase = "FAULTY_PRIMARY"
+
+            self._publish_status(
+                "Byzantine primary accepted the REQUEST but "
+                "intentionally skipped PRE-PREPARE."
+            )
+
+            self.get_logger().warning(
+                "SKIP-PRE-PREPARE BYZANTINE BEHAVIOR: "
+                f"primary={self.node_id}, "
+                f"view={self.current_view}, "
+                f"request_id={message.request_id}. "
+                "No PRE-PREPARE will be published."
+            )
+            return
+        
+
+
         self._process_cached_request_as_primary(
             message.request_id
-        ) 
+        )
+
+
+
+
+    def _cancel_progress_timeout(
+        self,
+        reason: str,
+    ) -> None:
+        """Cancel the active timeout after successful completion."""
+        if self.progress_timeout_timer is None:
+            return
+
+        request_id = self.progress_timeout_request_id
+        view = self.progress_timeout_view
+
+        self._clear_progress_timeout_timer()
+
+        self.progress_timeout_request_id = None
+        self.progress_timeout_view = None
+
+        self.get_logger().info(
+            "Progress timeout cancelled: "
+            f"request_id={request_id}, "
+            f"view={view}, "
+            f"reason={reason}"
+        )
+
+
+
+    def _progress_timeout_callback(
+        self,
+    ) -> None:
+        """Initiate VIEW-CHANGE when PBFT progress has stalled."""
+        request_id = self.progress_timeout_request_id
+        monitored_view = self.progress_timeout_view
+
+        self._clear_progress_timeout_timer()
+
+        self.progress_timeout_request_id = None
+        self.progress_timeout_view = None
+
+        if request_id is None or monitored_view is None:
+            self.get_logger().warning(
+                "Progress timeout fired without an active request."
+            )
+            return
+
+        if monitored_view != self.current_view:
+            self.get_logger().info(
+                "Ignoring obsolete progress timeout: "
+                f"monitored_view={monitored_view}, "
+                f"current_view={self.current_view}, "
+                f"request_id={request_id}"
+            )
+            return
+
+        if (
+            self.current_key is not None
+            and self.current_key in self.committed_instances
+        ):
+            self.get_logger().info(
+                "Ignoring progress timeout because the request "
+                "is already committed: "
+                f"request_id={request_id}, "
+                f"view={self.current_view}"
+            )
+            return
+
+        target_view = self.current_view + 1
+
+        self.get_logger().warning(
+            "PBFT PROGRESS TIMEOUT: "
+            f"request_id={request_id}, "
+            f"current_view={self.current_view}, "
+            f"target_view={target_view}, "
+            f"phase={self.phase}"
+        )
+
+        self._initiate_view_change(
+            target_view,
+            reason=(
+                "progress timeout for "
+                f"request_id={request_id}"
+            ),
+        )
 
 
 
@@ -1442,6 +1606,11 @@ class PBFTReplica(Node):
         if existing_instance is None:
             self.instances[key] = new_instance
 
+            self._arm_progress_timeout(
+                message.request_id,
+                reason="valid PRE-PREPARE accepted"
+            )
+
             self.get_logger().info(
                 "Accepted PRE-PREPARE: "
                 f"view={message.view}, "
@@ -1489,6 +1658,54 @@ class PBFTReplica(Node):
         # in this simplified PBFT model.
         if self.node_id != self.primary_id:
             self._send_prepare(key)
+
+
+    def _clear_progress_timeout_timer(
+        self,
+    ) -> None:
+        """Cancel and destroy the current progress timer."""
+        timer = self.progress_timeout_timer
+
+        self.progress_timeout_timer = None
+
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+    def _arm_progress_timeout(
+        self,
+        request_id: str,
+        reason: str,
+    ) -> None:
+        """Start or reset the progress timeout for one request."""
+        if not self.enable_progress_timeout:
+            return
+
+        if not request_id:
+            self.get_logger().error(
+                "Cannot arm progress timeout for an empty request_id."
+            )
+            return
+
+        self._clear_progress_timeout_timer()
+
+        self.progress_timeout_request_id = request_id
+        self.progress_timeout_view = self.current_view
+
+        self.progress_timeout_timer = self.create_timer(
+            self.progress_timeout_sec,
+            self._progress_timeout_callback,
+        )
+
+        self.get_logger().info(
+            "Progress timeout armed: "
+            f"request_id={request_id}, "
+            f"view={self.current_view}, "
+            f"timeout_sec={self.progress_timeout_sec:.3f}, "
+            f"reason={reason}"
+        )
+
+
 
     def _manual_view_change_timer_callback(
         self,
@@ -1961,6 +2178,11 @@ class PBFTReplica(Node):
         instance = self.instances[key]
         view, sequence_number = key
 
+        self._arm_progress_timeout(
+            instance.request_id,
+            reason="replica entered PREPARED",
+        )
+
         self.get_logger().info(
             "PREPARED: "
             f"view={view}, "
@@ -2426,6 +2648,11 @@ class PBFTReplica(Node):
 
         instance = self.instances[key]
         view, sequence_number = key
+
+        self._cancel_progress_timeout(
+            reason="request reached COMMITTED",
+        )
+
 
         # Execute the replicated state transition.
         self.emergency_stop = instance.emergency_stop
