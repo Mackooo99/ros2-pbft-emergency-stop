@@ -5,12 +5,12 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Create PREPARED state without a COMMIT quorum."""
+    """Create PREPARED state without allowing a COMMIT quorum."""
     nodes = []
 
-    # This test intentionally exceeds f=1 so that only replicas
-    # 0 and 1 publish COMMIT. The request becomes PREPARED but
-    # cannot become COMMITTED.
+    # Replicas 2 and 3 do not publish COMMIT.
+    # This intentionally exceeds f=1 for this negative liveness test.
+    # PREPARED can be reached, but only two COMMIT senders remain.
     skip_commit_node_ids = {2, 3}
 
     for node_id in range(4):
@@ -30,6 +30,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
         }
 
+        # Node 1 will later be the primary for view 1.
         if node_id == 1:
             parameters.update(
                 {
@@ -76,9 +77,7 @@ def generate_launch_description() -> LaunchDescription:
                 {
                     "primary_id": 0,
                     "current_view": 0,
-                    "request_id": (
-                        "prepared-certificate-test"
-                    ),
+                    "request_id": "prepared-certificate-test",
                     "emergency_stop": True,
                     "publish_delay_sec": 1.0,
                 }

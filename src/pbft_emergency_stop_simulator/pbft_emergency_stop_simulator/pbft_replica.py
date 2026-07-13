@@ -983,6 +983,16 @@ class PBFTReplica(Node):
                 and len(message.prepare_senders) == 0
             )
 
+
+            certificate_is_empty = (
+                message.prepared_view == 0
+                and message.prepared_sequence_number == 0
+                and not message.request_id
+                and not message.request_digest
+                and not message.emergency_stop
+                and len(message.prepare_senders) == 0
+            )
+
             if not certificate_is_empty:
                 self.get_logger().warning(
                     "Rejected VIEW-CHANGE with inconsistent empty "
@@ -1186,6 +1196,13 @@ class PBFTReplica(Node):
             new_view
         )
 
+
+        if not self._validate_view_change_certificate(message):
+            raise RuntimeError(
+                "Refusing to publish a locally constructed invalid "
+                f"VIEW-CHANGE message for new_view={new_view}."
+            )
+
         self.view_change_sent.add(new_view)
 
         self.phase = "VIEW_CHANGE"
@@ -1263,6 +1280,7 @@ class PBFTReplica(Node):
             message.sender_id
         )
 
+        
         if existing_message is not None:
             existing_payload = self._view_change_payload(
                 existing_message
@@ -1272,14 +1290,15 @@ class PBFTReplica(Node):
             )
 
             if existing_payload == received_payload:
-                if message.new_view not in self.view_change_sent:
+                # A locally stored message may later arrive again through
+                # DDS loopback. That is expected and should not generate
+                # a duplicate warning on the original sender.
+                if message.sender_id != self.node_id:
                     self.get_logger().warning(
-                        "Duplicate VIEW-CHANGE received from "
-                        "another replica: "
+                        "Duplicate VIEW-CHANGE ignored: "
                         f"sender={message.sender_id}, "
                         f"new_view={message.new_view}."
                     )
-                
             else:
                 self.get_logger().error(
                     "Conflicting VIEW-CHANGE messages detected from "
@@ -1289,6 +1308,9 @@ class PBFTReplica(Node):
                 )
 
             return
+
+
+
 
         messages_for_view[
             message.sender_id

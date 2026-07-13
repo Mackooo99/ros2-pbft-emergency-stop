@@ -5,7 +5,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Launch four replicas with node 2 triggering VIEW-CHANGE."""
+    """Launch node 2 with a controlled VIEW-CHANGE trigger."""
     nodes = []
 
     for node_id in range(4):
@@ -22,7 +22,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters.update(
                 {
                     "manual_view_change_target": 1,
-                    "manual_view_change_delay_sec": 2.0,
+                    "manual_view_change_delay_sec": 3.0,
                 }
             )
 
