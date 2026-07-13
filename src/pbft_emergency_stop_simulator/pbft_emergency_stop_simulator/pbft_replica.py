@@ -15,6 +15,8 @@ from rclpy.qos import (
 from pbft_emergency_stop_interfaces.msg import (
     PBFTMessage,
     ReplicaStatus,
+    NewView,
+    ViewChange,
 )
 
 from .protocol import compute_request_digest
@@ -152,6 +154,8 @@ class PBFTReplica(Node):
 
         self.prepare_threshold = 2 * self.max_faulty
         self.commit_threshold = 2 * self.max_faulty + 1
+        self.view_change_threshold = 2 * self.max_faulty + 1
+
 
         self.next_sequence_number = 1
 
@@ -200,6 +204,9 @@ class PBFTReplica(Node):
         self.delayed_prepare_timers: dict[MessageKey, object] = {}
         self.prepared_instances: set[MessageKey] = set()
 
+
+
+
         # COMMIT state.
         self.commit_senders: dict[
             MessageKey, set[int]
@@ -213,6 +220,21 @@ class PBFTReplica(Node):
         self.commit_scheduled: set[MessageKey] = set()
         self.delayed_commit_timers: dict[MessageKey, object] = {}
         self.committed_instances: set[MessageKey] = set()
+
+
+        # VIEW-CHANGE state indexed by the requested new view.
+        # For every new view, at most one message from each sender is stored.
+        self.view_change_messages: dict[
+            int,
+            dict[int, ViewChange],
+        ] = defaultdict(dict)
+
+        # Views for which this replica has already published its own
+        # VIEW-CHANGE message. Publishing will be implemented later.
+        self.view_change_sent: set[int] = set()
+
+        # Views for which the new primary has already published NEW-VIEW.
+        self.new_view_sent: set[int] = set()
 
         # Publishers.
         self.pre_prepare_publisher = self.create_publisher(
@@ -234,10 +256,23 @@ class PBFTReplica(Node):
         )
         
         self.status_publisher = self.create_publisher(
-	    ReplicaStatus,
-	    "/pbft/status",
-	    create_status_qos(),
-	)
+            ReplicaStatus,
+            "/pbft/status",
+            create_status_qos(),
+	    )
+
+        self.view_change_publisher = self.create_publisher(
+            ViewChange,
+            "/pbft/view_change",
+            create_pbft_qos(),
+        )
+
+        self.new_view_publisher = self.create_publisher(
+            NewView,
+            "/pbft/new_view",
+            create_pbft_qos(),
+        )
+
 
         # Subscriptions.
         self.request_subscription = self.create_subscription(
@@ -267,11 +302,22 @@ class PBFTReplica(Node):
             self.commit_callback,
             create_pbft_qos(),
         )
+
+        self.view_change_subscription = self.create_subscription(
+            ViewChange,
+            "/pbft/view_change",
+            self.view_change_callback,
+            create_pbft_qos(),
+        )
+
         
         self.status_timer = self.create_timer(
 	    1.0,
 	    self._publish_status,
-	)
+	    )
+
+
+
 
         role = (
             "PRIMARY"
@@ -840,6 +886,211 @@ class PBFTReplica(Node):
         )
 
         return instance
+
+
+    def _validate_view_change_certificate(
+    self,
+    message: ViewChange,
+) -> bool:
+        """Validate the optional PREPARED certificate in VIEW-CHANGE."""
+        if not message.has_prepared_certificate:
+            certificate_is_empty = (
+                message.prepared_sequence_number == 0
+                and not message.request_id
+                and not message.request_digest
+                and not message.emergency_stop
+                and len(message.prepare_senders) == 0
+            )
+
+            if not certificate_is_empty:
+                self.get_logger().warning(
+                    "Rejected VIEW-CHANGE with inconsistent empty "
+                    "PREPARED certificate: "
+                    f"sender={message.sender_id}, "
+                    f"new_view={message.new_view}."
+                )
+                return False
+
+            return True
+
+        if message.prepared_view >= message.new_view:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE because prepared_view must be "
+                "older than new_view: "
+                f"prepared_view={message.prepared_view}, "
+                f"new_view={message.new_view}."
+            )
+            return False
+
+        if message.prepared_sequence_number == 0:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE with a PREPARED certificate "
+                "and sequence_number=0."
+            )
+            return False
+
+        if not message.request_id:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE with an empty prepared request_id."
+            )
+            return False
+
+        if not message.emergency_stop:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE because the prepared request has "
+                "emergency_stop=false."
+            )
+            return False
+
+        expected_digest = compute_request_digest(
+            message.request_id,
+            message.emergency_stop,
+        )
+
+        if message.request_digest != expected_digest:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE because the prepared request "
+                "digest is invalid: "
+                f"sender={message.sender_id}."
+            )
+            return False
+
+        prepare_senders = list(message.prepare_senders)
+        unique_prepare_senders = set(prepare_senders)
+
+        if len(unique_prepare_senders) != len(prepare_senders):
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE because the PREPARED certificate "
+                "contains duplicate PREPARE senders."
+            )
+            return False
+
+        if len(unique_prepare_senders) < self.prepare_threshold:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE because the PREPARED certificate "
+                "does not contain enough PREPARE senders: "
+                f"received={len(unique_prepare_senders)}, "
+                f"required={self.prepare_threshold}."
+            )
+            return False
+
+        prepared_primary = self._primary_for_view(
+            message.prepared_view
+        )
+
+        for sender_id in unique_prepare_senders:
+            if not 0 <= sender_id < self.replica_count:
+                self.get_logger().warning(
+                    "Rejected VIEW-CHANGE because the PREPARED "
+                    "certificate contains an invalid sender_id: "
+                    f"{sender_id}."
+                )
+                return False
+
+            # In the current simplified normal-case implementation,
+            # primary replicas do not send PREPARE.
+            if sender_id == prepared_primary:
+                self.get_logger().warning(
+                    "Rejected VIEW-CHANGE because the PREPARED "
+                    "certificate contains the primary as a PREPARE "
+                    f"sender: sender_id={sender_id}, "
+                    f"prepared_view={message.prepared_view}."
+                )
+                return False
+
+        return True
+
+
+
+    def _view_change_payload(
+        self,
+        message: ViewChange,
+    ) -> tuple:
+        """Return the protocol-relevant VIEW-CHANGE payload."""
+        return (
+            message.new_view,
+            message.has_prepared_certificate,
+            message.prepared_view,
+            message.prepared_sequence_number,
+            message.request_id,
+            message.request_digest,
+            message.emergency_stop,
+            tuple(message.prepare_senders),
+        )    
+
+
+    def view_change_callback(
+        self,
+        message: ViewChange,
+    ) -> None:
+        """Validate and store one incoming VIEW-CHANGE message."""
+        if not 0 <= message.sender_id < self.replica_count:
+            self.get_logger().warning(
+                "Rejected VIEW-CHANGE with an invalid sender_id: "
+                f"{message.sender_id}."
+            )
+            return
+
+        if message.new_view <= self.current_view:
+            self.get_logger().warning(
+                "Rejected stale VIEW-CHANGE: "
+                f"sender={message.sender_id}, "
+                f"new_view={message.new_view}, "
+                f"current_view={self.current_view}."
+            )
+            return
+
+        if not self._validate_view_change_certificate(message):
+            return
+
+        messages_for_view = self.view_change_messages[
+            message.new_view
+        ]
+
+        existing_message = messages_for_view.get(
+            message.sender_id
+        )
+
+        if existing_message is not None:
+            existing_payload = self._view_change_payload(
+                existing_message
+            )
+            received_payload = self._view_change_payload(
+                message
+            )
+
+            if existing_payload == received_payload:
+                self.get_logger().warning(
+                    "Duplicate VIEW-CHANGE ignored: "
+                    f"sender={message.sender_id}, "
+                    f"new_view={message.new_view}."
+                )
+            else:
+                self.get_logger().error(
+                    "Conflicting VIEW-CHANGE messages detected from "
+                    "the same sender: "
+                    f"sender={message.sender_id}, "
+                    f"new_view={message.new_view}."
+                )
+
+            return
+
+        messages_for_view[
+            message.sender_id
+        ] = message
+
+        sender_ids = sorted(messages_for_view)
+
+        self.get_logger().info(
+            "Accepted VIEW-CHANGE: "
+            f"sender={message.sender_id}, "
+            f"new_view={message.new_view}, "
+            f"has_prepared_certificate="
+            f"{message.has_prepared_certificate}, "
+            f"view_change_count={len(sender_ids)}, "
+            f"threshold={self.view_change_threshold}, "
+            f"senders={sender_ids}"
+        )
 
 
 
