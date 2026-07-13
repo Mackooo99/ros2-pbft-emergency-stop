@@ -174,6 +174,13 @@ class PBFTReplica(Node):
             self.status_detail = "Replica initialized."
 
         # REQUEST bookkeeping.
+
+        # Every replica caches valid client requests so that a future
+        # primary can continue them after a view change.
+        self.cached_client_requests: dict[str, PBFTInstance,] = {}
+
+        # Requests for which this replica has already started the
+        # normal PBFT protocol while acting as primary.
         self.processed_request_ids: set[str] = set()
 
         # Local PBFT instances indexed by (view, sequence_number).
@@ -665,33 +672,98 @@ class PBFTReplica(Node):
 
 
 
+    def _process_cached_request_as_primary(
+        self,
+        request_id: str,
+    ) -> None:
+        """Assign a sequence number and start normal PBFT processing."""
+        instance = self.cached_client_requests.get(request_id)
 
-    def request_callback(self, message: PBFTMessage) -> None:
-        """Validate a client REQUEST and publish PRE-PREPARE."""
+        if instance is None:
+            self.get_logger().error(
+                "Primary cannot process an uncached REQUEST: "
+                f"request_id={request_id}"
+            )
+            return
+
+        sequence_number = self.next_sequence_number
+        self.next_sequence_number += 1
+
+        key = (
+            self.current_view,
+            sequence_number,
+        )
+
+        self.instances[key] = instance
+        self.processed_request_ids.add(request_id)
+
+        self.current_key = key
+        self.phase = "PRE_PREPARED"
+
+        self._publish_status(
+            "Primary accepted cached REQUEST and assigned "
+            "a sequence number."
+        )
+
+        self.get_logger().info(
+            "Accepted valid REQUEST as primary: "
+            f"request_id={instance.request_id}, "
+            f"assigned_sequence={sequence_number}, "
+            f"digest={instance.request_digest[:12]}..."
+        )
+
+        pre_prepare = PBFTMessage()
+
+        pre_prepare.stamp = self.get_clock().now().to_msg()
+        pre_prepare.message_type = PBFTMessage.PRE_PREPARE
+        pre_prepare.sender_id = self.node_id
+        pre_prepare.recipient_id = -1
+        pre_prepare.view = self.current_view
+        pre_prepare.sequence_number = sequence_number
+        pre_prepare.request_id = instance.request_id
+        pre_prepare.request_digest = instance.request_digest
+        pre_prepare.emergency_stop = instance.emergency_stop
+
+        self.pre_prepare_publisher.publish(pre_prepare)
+
+        self.get_logger().info(
+            "Published PRE-PREPARE: "
+            f"view={pre_prepare.view}, "
+            f"sequence={pre_prepare.sequence_number}, "
+            f"request_id={pre_prepare.request_id}, "
+            f"digest={pre_prepare.request_digest[:12]}..."
+        )
+
+
+
+    def _validate_and_cache_client_request(
+        self,
+        message: PBFTMessage,
+    ) -> PBFTInstance | None:
+        """Validate a client request and cache it on this replica."""
         if message.message_type != PBFTMessage.REQUEST:
             self.get_logger().warning(
                 "Rejected message on /pbft/request: "
                 f"message_type={message.message_type}"
             )
-            return
-
-        # Only the current primary processes client requests.
-        if self.node_id != self.primary_id:
-            return
+            return None
 
         if message.sender_id != -1:
             self.get_logger().warning(
                 "Rejected REQUEST with an invalid client sender_id: "
                 f"{message.sender_id}"
             )
-            return
+            return None
 
-        if message.recipient_id not in (-1, self.node_id):
+        # The request is logically addressed to the current primary,
+        # but every replica receives the ROS 2 topic and caches it.
+        if message.recipient_id not in (-1, self.primary_id):
             self.get_logger().warning(
-                "Rejected REQUEST intended for another replica: "
-                f"recipient_id={message.recipient_id}"
+                "Rejected REQUEST intended for an unexpected primary: "
+                f"recipient_id={message.recipient_id}, "
+                f"expected_primary_id={self.primary_id}"
             )
-            return
+            return None
 
         if message.view != self.current_view:
             self.get_logger().warning(
@@ -699,20 +771,20 @@ class PBFTReplica(Node):
                 f"received={message.view}, "
                 f"expected={self.current_view}"
             )
-            return
+            return None
+
+        if message.sequence_number != 0:
+            self.get_logger().warning(
+                "Rejected REQUEST with a non-zero sequence number: "
+                f"sequence_number={message.sequence_number}"
+            )
+            return None
 
         if not message.request_id:
             self.get_logger().warning(
                 "Rejected REQUEST with an empty request_id."
             )
-            return
-
-        if message.request_id in self.processed_request_ids:
-            self.get_logger().warning(
-                "Duplicate REQUEST ignored: "
-                f"request_id={message.request_id}"
-            )
-            return
+            return None
 
         expected_digest = compute_request_digest(
             message.request_id,
@@ -724,19 +796,14 @@ class PBFTReplica(Node):
                 "Rejected REQUEST because its digest is invalid: "
                 f"request_id={message.request_id}"
             )
-            return
+            return None
 
         if not message.emergency_stop:
             self.get_logger().warning(
                 "Rejected REQUEST because this simulator currently "
                 "supports only emergency_stop=true."
             )
-            return
-
-        sequence_number = self.next_sequence_number
-        self.next_sequence_number += 1
-
-        key = (self.current_view, sequence_number)
+            return None
 
         instance = PBFTInstance(
             request_id=message.request_id,
@@ -744,43 +811,64 @@ class PBFTReplica(Node):
             emergency_stop=message.emergency_stop,
         )
 
-        self.instances[key] = instance
-        self.processed_request_ids.add(message.request_id)
-        
-        self.current_key = key
-        self.phase = "PRE_PREPARED"
-        self._publish_status(
-            "Primary accepted REQUEST and assigned a sequence number."
+        existing_instance = self.cached_client_requests.get(
+            message.request_id
         )
 
+        if existing_instance is not None:
+            if existing_instance != instance:
+                self.get_logger().error(
+                    "Rejected conflicting client REQUEST reuse: "
+                    f"request_id={message.request_id}"
+                )
+                return None
+
+            # The same valid request is already cached. Return it so that
+            # the primary can independently detect protocol-level replay.
+            return existing_instance
+
+        self.cached_client_requests[
+            message.request_id
+        ] = instance
+
         self.get_logger().info(
-            "Accepted valid REQUEST: "
+            "Cached valid client REQUEST: "
             f"request_id={message.request_id}, "
-            f"assigned_sequence={sequence_number}, "
+            f"view={message.view}, "
+            f"intended_primary={message.recipient_id}, "
             f"digest={message.request_digest[:12]}..."
         )
 
-        pre_prepare = PBFTMessage()
+        return instance
 
-        pre_prepare.stamp = self.get_clock().now().to_msg()
-        pre_prepare.message_type = PBFTMessage.PRE_PREPARE
-        pre_prepare.sender_id = self.node_id
-        pre_prepare.recipient_id = -1
-        pre_prepare.view = self.current_view
-        pre_prepare.sequence_number = sequence_number
-        pre_prepare.request_id = message.request_id
-        pre_prepare.request_digest = message.request_digest
-        pre_prepare.emergency_stop = message.emergency_stop
 
-        self.pre_prepare_publisher.publish(pre_prepare)
 
-        self.get_logger().info(
-            "Published PRE-PREPARE: "
-            f"view={pre_prepare.view}, "
-            f"sequence={pre_prepare.sequence_number}, "
-            f"request_id={pre_prepare.request_id}, "
-            f"digest={pre_prepare.request_digest[:12]}..."
+    def request_callback(self, message: PBFTMessage) -> None:
+        """Validate and cache a client REQUEST on every replica."""
+        instance = self._validate_and_cache_client_request(
+            message
         )
+
+        if instance is None:
+            return
+
+        # Every correct replica stores the request, but only the current
+        # primary may assign a sequence number and start PRE-PREPARE.
+        if self.node_id != self.primary_id:
+            return
+
+        if message.request_id in self.processed_request_ids:
+            self.get_logger().warning(
+                "Duplicate REQUEST ignored by the primary: "
+                f"request_id={message.request_id}"
+            )
+            return
+
+        self._process_cached_request_as_primary(
+            message.request_id
+        ) 
+
+
 
     def pre_prepare_callback(
         self,
