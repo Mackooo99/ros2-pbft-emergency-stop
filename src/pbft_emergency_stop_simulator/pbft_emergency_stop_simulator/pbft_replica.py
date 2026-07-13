@@ -71,7 +71,7 @@ class PBFTReplica(Node):
         self.node_id = int(
             self.get_parameter("node_id").value
         )
-        self.primary_id = int(
+        self.configured_primary_id = int(
             self.get_parameter("primary_id").value
         )
         self.current_view = int(
@@ -144,6 +144,11 @@ class PBFTReplica(Node):
             self.byzantine_behavior = "none"
 
         self._validate_configuration()
+
+        # The active primary is derived from the current PBFT view.
+        self.primary_id = self._primary_for_view(
+            self.current_view
+        )
 
         self.prepare_threshold = 2 * self.max_faulty
         self.commit_threshold = 2 * self.max_faulty + 1
@@ -588,6 +593,19 @@ class PBFTReplica(Node):
 
         self.status_publisher.publish(status)
 
+    
+    
+    def _primary_for_view(self, view: int) -> int:
+        """Return the primary replica assigned to the given view."""
+        if view < 0:
+            raise ValueError(
+                "PBFT view must be non-negative."
+            )
+
+        return view % self.replica_count
+    
+    
+    
     def _validate_configuration(self) -> None:
         """Validate replica identity and the supported PBFT configuration."""
         if self.max_faulty < 0:
@@ -597,8 +615,6 @@ class PBFTReplica(Node):
 
         expected_replica_count = 3 * self.max_faulty + 1
 
-        # This simulator currently uses quorum formulas that assume
-        # the minimal PBFT configuration n = 3f + 1.
         if self.replica_count != expected_replica_count:
             raise ValueError(
                 "Invalid PBFT configuration: "
@@ -614,17 +630,41 @@ class PBFTReplica(Node):
                 f"0..{self.replica_count - 1}."
             )
 
-        if not 0 <= self.primary_id < self.replica_count:
-            raise ValueError(
-                f"primary_id={self.primary_id} is outside the valid range "
-                f"0..{self.replica_count - 1}."
-            )
-
         if self.current_view < 0:
             raise ValueError(
                 "current_view must be non-negative."
             )
-        
+
+        if not (
+            0
+            <= self.configured_primary_id
+            < self.replica_count
+        ):
+            raise ValueError(
+                "Configured primary_id="
+                f"{self.configured_primary_id} is outside the valid "
+                f"range 0..{self.replica_count - 1}."
+            )
+
+        expected_primary_id = self._primary_for_view(
+            self.current_view
+        )
+
+        if self.configured_primary_id != expected_primary_id:
+            raise ValueError(
+                "Invalid initial primary configuration: "
+                f"current_view={self.current_view}, "
+                f"configured_primary_id="
+                f"{self.configured_primary_id}, "
+                f"expected_primary_id="
+                f"{expected_primary_id}. "
+                "The primary must satisfy "
+                "primary_id = current_view % replica_count."
+            )
+
+
+
+
 
     def request_callback(self, message: PBFTMessage) -> None:
         """Validate a client REQUEST and publish PRE-PREPARE."""
