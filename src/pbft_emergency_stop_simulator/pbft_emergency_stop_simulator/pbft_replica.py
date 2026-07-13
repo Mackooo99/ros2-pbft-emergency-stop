@@ -69,6 +69,10 @@ class PBFTReplica(Node):
         self.declare_parameter("duplicate_message_count", 3)
         self.declare_parameter("prepare_delay_sec", 4.0)
         self.declare_parameter("commit_delay_sec", 4.0)
+        self.declare_parameter("manual_view_change_target", -1)
+        self.declare_parameter("manual_view_change_delay_sec", 2.0)
+
+
 
         self.node_id = int(
             self.get_parameter("node_id").value
@@ -102,6 +106,12 @@ class PBFTReplica(Node):
         self.commit_delay_sec = float(
             self.get_parameter("commit_delay_sec").value
         )
+        self.manual_view_change_target = int(
+            self.get_parameter("manual_view_change_target").value
+        )
+        self.manual_view_change_delay_sec = float(
+            self.get_parameter("manual_view_change_delay_sec").value
+        )
 
         if self.duplicate_message_count < 2:
             raise ValueError(
@@ -117,6 +127,23 @@ class PBFTReplica(Node):
             raise ValueError(
                 "commit_delay_sec must be non-negative."
             )
+
+        if self.manual_view_change_delay_sec <= 0.0:
+            raise ValueError(
+                "manual_view_change_delay_sec must be positive."
+            )
+
+        if (
+            self.manual_view_change_target != -1
+            and self.manual_view_change_target
+            <= self.current_view
+        ):
+            raise ValueError(
+                "manual_view_change_target must be -1 or greater "
+                "than current_view."
+            )
+        
+
 
         allowed_behaviors = {
             "none",
@@ -236,6 +263,11 @@ class PBFTReplica(Node):
         # Views for which the new primary has already published NEW-VIEW.
         self.new_view_sent: set[int] = set()
 
+
+        # Test-only timer used to invoke the same function that will
+        # later be called by the real progress timeout.
+        self.manual_view_change_timer = None
+
         # Publishers.
         self.pre_prepare_publisher = self.create_publisher(
             PBFTMessage,
@@ -315,6 +347,19 @@ class PBFTReplica(Node):
 	    1.0,
 	    self._publish_status,
 	    )
+
+
+        if self.manual_view_change_target > self.current_view:
+            self.manual_view_change_timer = self.create_timer(
+                self.manual_view_change_delay_sec,
+                self._manual_view_change_timer_callback,
+            )
+
+            self.get_logger().info(
+                "Manual VIEW-CHANGE trigger configured: "
+                f"target_view={self.manual_view_change_target}, "
+                f"delay_sec={self.manual_view_change_delay_sec:.3f}"
+            )
 
 
 
@@ -888,6 +933,42 @@ class PBFTReplica(Node):
         return instance
 
 
+    def _select_prepared_instance_for_view_change(
+        self,
+        new_view: int,
+    ) -> tuple[MessageKey, PBFTInstance] | None:
+        """Select the newest unfinished locally PREPARED instance."""
+        candidates = [
+            key
+            for key in self.prepared_instances
+            if (
+                key in self.instances
+                and key not in self.committed_instances
+                and key[0] < new_view
+            )
+        ]
+
+        if not candidates:
+            return None
+
+        # The project currently processes one request at a time.
+        # This selects the highest prepared view, then the highest
+        # sequence number inside that view.
+        selected_key = max(
+            candidates,
+            key=lambda key: (
+                key[0],
+                key[1],
+            ),
+        )
+
+        return (
+            selected_key,
+            self.instances[selected_key],
+        )
+
+
+
     def _validate_view_change_certificate(
     self,
     message: ViewChange,
@@ -1002,6 +1083,137 @@ class PBFTReplica(Node):
 
 
 
+    def _build_view_change_message(
+        self,
+        new_view: int,
+    ) -> ViewChange:
+        """Construct this replica's VIEW-CHANGE message."""
+        if new_view <= self.current_view:
+            raise ValueError(
+                "A VIEW-CHANGE target must be greater than "
+                "the current view."
+            )
+
+        message = ViewChange()
+
+        message.stamp = self.get_clock().now().to_msg()
+        message.sender_id = self.node_id
+        message.new_view = new_view
+
+        selected = (
+            self._select_prepared_instance_for_view_change(
+                new_view
+            )
+        )
+
+        if selected is None:
+            message.has_prepared_certificate = False
+            message.prepared_view = 0
+            message.prepared_sequence_number = 0
+            message.request_id = ""
+            message.request_digest = ""
+            message.emergency_stop = False
+            message.prepare_senders = []
+
+            return message
+
+        key, instance = selected
+        prepared_view, sequence_number = key
+
+        prepare_senders = sorted(
+            self.prepare_senders.get(key, set())
+        )
+
+        if len(prepare_senders) < self.prepare_threshold:
+            raise RuntimeError(
+                "Local PREPARED invariant violated: "
+                f"key={key}, "
+                f"prepare_count={len(prepare_senders)}, "
+                f"required={self.prepare_threshold}."
+            )
+
+        message.has_prepared_certificate = True
+        message.prepared_view = prepared_view
+        message.prepared_sequence_number = (
+            sequence_number
+        )
+        message.request_id = instance.request_id
+        message.request_digest = (
+            instance.request_digest
+        )
+        message.emergency_stop = (
+            instance.emergency_stop
+        )
+        message.prepare_senders = prepare_senders
+
+        return message
+
+
+
+    def _initiate_view_change(
+        self,
+        new_view: int,
+        reason: str,
+    ) -> None:
+        """Publish this replica's VIEW-CHANGE exactly once."""
+        if new_view <= self.current_view:
+            self.get_logger().warning(
+                "VIEW-CHANGE initiation ignored because the "
+                "target view is not newer: "
+                f"new_view={new_view}, "
+                f"current_view={self.current_view}."
+            )
+            return
+
+        if new_view in self.view_change_sent:
+            self.get_logger().warning(
+                "Local VIEW-CHANGE already sent: "
+                f"sender={self.node_id}, "
+                f"new_view={new_view}."
+            )
+            return
+
+        if self._is_silent_byzantine():
+            self.get_logger().warning(
+                "Silent Byzantine replica intentionally skipped "
+                "VIEW-CHANGE publication: "
+                f"node_id={self.node_id}, "
+                f"new_view={new_view}."
+            )
+            return
+
+        message = self._build_view_change_message(
+            new_view
+        )
+
+        self.view_change_sent.add(new_view)
+
+        self.phase = "VIEW_CHANGE"
+        self._publish_status(
+            "Replica initiated VIEW-CHANGE: "
+            f"target_view={new_view}, reason={reason}."
+        )
+
+        # Count the local message immediately instead of depending
+        # on DDS loopback delivery.
+        self.view_change_callback(message)
+
+        self.view_change_publisher.publish(message)
+
+        self.get_logger().warning(
+            "Published VIEW-CHANGE: "
+            f"sender={message.sender_id}, "
+            f"new_view={message.new_view}, "
+            f"reason={reason}, "
+            f"has_prepared_certificate="
+            f"{message.has_prepared_certificate}, "
+            f"prepared_view={message.prepared_view}, "
+            f"prepared_sequence="
+            f"{message.prepared_sequence_number}, "
+            f"prepare_senders="
+            f"{list(message.prepare_senders)}"
+        )
+
     def _view_change_payload(
         self,
         message: ViewChange,
@@ -1060,11 +1272,14 @@ class PBFTReplica(Node):
             )
 
             if existing_payload == received_payload:
-                self.get_logger().warning(
-                    "Duplicate VIEW-CHANGE ignored: "
-                    f"sender={message.sender_id}, "
-                    f"new_view={message.new_view}."
-                )
+                if message.new_view not in self.view_change_sent:
+                    self.get_logger().warning(
+                        "Duplicate VIEW-CHANGE received from "
+                        "another replica: "
+                        f"sender={message.sender_id}, "
+                        f"new_view={message.new_view}."
+                    )
+                
             else:
                 self.get_logger().error(
                     "Conflicting VIEW-CHANGE messages detected from "
@@ -1252,6 +1467,21 @@ class PBFTReplica(Node):
         # in this simplified PBFT model.
         if self.node_id != self.primary_id:
             self._send_prepare(key)
+
+    def _manual_view_change_timer_callback(
+        self,
+    ) -> None:
+        """Invoke VIEW-CHANGE through the controlled test hook."""
+        if self.manual_view_change_timer is not None:
+            self.manual_view_change_timer.cancel()
+            self.manual_view_change_timer = None
+
+        self._initiate_view_change(
+            self.manual_view_change_target,
+            reason="manual test trigger",
+        )
+
+
 
     def _send_early_commit(self, key: MessageKey) -> None:
         """Publish COMMIT before PREPARED to test receiver safety."""
