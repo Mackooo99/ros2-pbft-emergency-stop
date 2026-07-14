@@ -59,6 +59,25 @@ def generate_launch_description() -> LaunchDescription:
     nodes.append(
         Node(
             package="pbft_emergency_stop_simulator",
+            executable="safety_supervisor",
+            name="safety_supervisor",
+            output="screen",
+            emulate_tty=True,
+            parameters=[
+                {
+                    "replica_count": 4,
+                    "max_faulty": 1,
+                    "decision_timeout_sec": 8.0,
+                    "allow_confirmed_release": False,
+                    "heartbeat_period_sec": 0.5,
+                }
+            ],
+        )
+    )
+
+    nodes.append(
+        Node(
+            package="pbft_emergency_stop_simulator",
             executable="client_node",
             name="pbft_client",
             output="screen",

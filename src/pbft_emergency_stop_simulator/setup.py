@@ -1,11 +1,18 @@
 from glob import glob
 from os.path import join
 
+import os
 from setuptools import find_packages, setup
 
 
 package_name = "pbft_emergency_stop_simulator"
 
+
+web_files = [
+    "web/index.html",
+    "web/styles.css",
+    "web/app.js",
+]
 
 setup(
     name=package_name,
@@ -23,6 +30,14 @@ setup(
         (
             join("share", package_name, "launch"),
             glob("launch/*.launch.py"),
+        ),
+        (
+            os.path.join("share", package_name, "config"),
+            glob("config/*.yaml"),
+        ),
+        (
+            os.path.join("share", package_name, "web"),
+            web_files,
         ),
     ],
     install_requires=["setuptools"],
@@ -43,9 +58,26 @@ setup(
                 "pbft_emergency_stop_simulator.pbft_replica:main"
             ),
             (
-		"pbft_monitor = "
-		"pbft_emergency_stop_simulator.pbft_monitor:main"
-	    ),
+                "pbft_monitor = "
+                "pbft_emergency_stop_simulator.pbft_monitor:main"
+            ),
+            (
+                "safety_supervisor = "
+                "pbft_emergency_stop_simulator.safety_supervisor:main"
+            ),
+            (
+                "scenario_evaluator = "
+                "pbft_emergency_stop_simulator.scenario_evaluator:main"
+            ),
+            (
+                "pbft_test_console = "
+                "pbft_emergency_stop_simulator.test_console.web_app:main"
+            ),
+            (
+                "pbft_test_cli = "
+                "pbft_emergency_stop_simulator.test_console.cli:main"
+            )
+
         ],
     },
 )

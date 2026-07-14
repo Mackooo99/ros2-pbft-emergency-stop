@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PBFT Test Console</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <div><strong>PBFT Test Console</strong><span>Emergency-stop verification</span></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-title scenario-title-row"><span>Scenarios</span><span id="catalog-count">0</span></div>
+        <input id="scenario-search" class="scenario-search" type="search" placeholder="Search scenarios…">
+        <div class="scenario-toolbar">
+          <button id="select-visible" class="tiny">Select visible</button>
+          <button id="clear-selection" class="tiny">Clear</button>
+          <span id="selected-count">0 selected</span>
+        </div>
+        <div id="scenario-list" class="scenario-list"></div>
+      </div>
+
+      <div class="controls">
+        <label>Repeat each scenario
+          <input id="repeat" type="number" min="1" max="100" value="1">
+        </label>
+        <label class="switch-line"><input id="stop-on-failure" type="checkbox">Stop on first failure</label>
+        <button id="run-selected" class="primary">Run selected</button>
+        <button id="run-all">Run all</button>
+        <button id="cancel" class="danger ghost">Cancel active suite</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>Distributed Safety Verification</h1>
+          <p id="connection">Connecting to test server…</p>
+        </div>
+        <div class="top-actions"><a id="report-link" class="button-link disabled" target="_blank">Open report</a></div>
+      </header>
+
+      <section class="metrics">
+        <article><span>Suite</span><strong id="suite-status">IDLE</strong></article>
+        <article><span>Scenario</span><strong id="active-scenario">—</strong></article>
+        <article><span>Current view</span><strong id="current-view">0</strong></article>
+        <article><span>Primary</span><strong id="primary-id">Replica 0</strong></article>
+        <article><span>Safety</span><strong id="safety-state">SAFE_INITIAL_STOP</strong></article>
+        <article><span>Output</span><strong id="safety-output">STOP ACTIVE</strong></article>
+      </section>
+
+      <section class="grid two">
+        <article class="panel">
+          <div class="panel-head"><h2>Protocol pipeline</h2><span id="elapsed">0.0 s</span></div>
+          <div id="pipeline" class="pipeline"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><h2>Assertions</h2><span id="assertion-summary">Waiting</span></div>
+          <div id="assertions" class="assertions empty">Assertions are evaluated when the scenario reaches its terminal condition.</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Replica state</h2><span>Live ROS 2 status</span></div>
+        <div id="replicas" class="replicas"></div>
+      </section>
+
+      <section class="grid two lower">
+        <article class="panel timeline-panel">
+          <div class="panel-head"><h2>Timeline</h2><span>Protocol events</span></div>
+          <div id="timeline" class="timeline"></div>
+        </article>
+        <article class="panel log-panel">
+          <div class="panel-head"><h2>Process log</h2><button id="clear-log" class="tiny">Clear view</button></div>
+          <pre id="live-log"></pre>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Suite results</h2><span id="result-count">0 tests</span></div>
+        <div id="results" class="results empty">No suite has been executed yet.</div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

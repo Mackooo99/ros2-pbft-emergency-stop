@@ -26,3 +26,16 @@ rosbag2_*/
 # Operating system files
 .DS_Store
 Thumbs.db
+
+# ROS 2 workspace artifacts
+build/
+install/
+log/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# PBFT runtime reports
+.ros/
