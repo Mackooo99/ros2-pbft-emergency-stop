@@ -12,6 +12,11 @@ This mixin is combined with the other replica mixins in
 ``self.replica_count`` to already be set by ``PBFTReplica.__init__``.
 """
 
+from pbft_emergency_stop_interfaces.msg import PBFTMessage
+
+from ..protocol import compute_request_digest
+from .types import MessageKey
+
 
 class ByzantineBehaviorMixin:
     def _is_skip_pre_prepare_byzantine(
@@ -270,4 +275,3 @@ class ByzantineBehaviorMixin:
             )
 
         return correct_digest
-

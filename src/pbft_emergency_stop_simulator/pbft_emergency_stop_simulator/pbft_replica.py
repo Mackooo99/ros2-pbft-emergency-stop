@@ -8,8 +8,17 @@ testable while every mixin still shares the same ``self`` state, so
 no protocol logic changes as part of this reorganization.
 """
 
+from collections import defaultdict
+
 import rclpy
 from rclpy.node import Node
+
+from pbft_emergency_stop_interfaces.msg import (
+    NewView,
+    PBFTMessage,
+    ReplicaStatus,
+    ViewChange,
+)
 
 from .replica.byzantine import ByzantineBehaviorMixin
 from .replica.commit import CommitMixin
@@ -19,6 +28,7 @@ from .replica.progress_timeout import ProgressTimeoutMixin
 from .replica.qos import create_pbft_qos, create_status_qos
 from .replica.request_handling import RequestHandlingMixin
 from .replica.status import StatusMixin
+from .replica.types import MessageKey, PBFTInstance
 from .replica.view_change import ViewChangeMixin
 
 

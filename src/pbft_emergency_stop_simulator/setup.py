@@ -17,7 +17,9 @@ web_files = [
 setup(
     name=package_name,
     version="0.0.2",
-    packages=find_packages(exclude=["test"]),
+    packages=['pbft_emergency_stop_simulator',
+    'pbft_emergency_stop_simulator.replica',
+    'pbft_emergency_stop_simulator.test_console',],
     data_files=[
         (
             "share/ament_index/resource_index/packages",

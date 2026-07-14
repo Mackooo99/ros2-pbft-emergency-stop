@@ -7,6 +7,7 @@ moves the instance into the PREPARE phase.
 from pbft_emergency_stop_interfaces.msg import PBFTMessage
 
 from ..protocol import compute_request_digest
+from .types import PBFTInstance
 
 
 class PrePrepareMixin:
@@ -146,5 +147,3 @@ class PrePrepareMixin:
         # in this simplified PBFT model.
         if self.node_id != self.primary_id:
             self._send_prepare(key)
-
-
