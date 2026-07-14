@@ -7,87 +7,188 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">P</div>
-        <div><strong>PBFT Test Console</strong><span>Emergency-stop verification</span></div>
-      </div>
+  <header class="wizard-header">
+    <div class="brand compact">
+      <div class="brand-mark">P</div>
+      <div><strong>PBFT Test Console</strong><span>Configurable emergency-stop verification</span></div>
+    </div>
+    <nav class="stepper" aria-label="Application steps">
+      <button id="step-config-nav" class="step active"><b>1</b><span>Configuration</span></button>
+      <button id="step-scenarios-nav" class="step" disabled><b>2</b><span>Scenarios</span></button>
+      <button id="step-execution-nav" class="step" disabled><b>3</b><span>Execution</span></button>
+      <button id="step-results-nav" class="step" disabled><b>4</b><span>Results</span></button>
+    </nav>
+  </header>
 
-      <div class="sidebar-section">
-        <div class="section-title scenario-title-row"><span>Scenarios</span><span id="catalog-count">0</span></div>
-        <input id="scenario-search" class="scenario-search" type="search" placeholder="Search scenarios…">
-        <div class="scenario-toolbar">
-          <button id="select-visible" class="tiny">Select visible</button>
-          <button id="clear-selection" class="tiny">Clear</button>
-          <span id="selected-count">0 selected</span>
+  <section id="configuration-step" class="configuration-page">
+    <div class="configuration-hero">
+      <div>
+        <span class="eyebrow">System definition</span>
+        <h1>Configure the PBFT cluster</h1>
+        <p>Define the fault tolerance and timing model first. The selected scenario will determine how many Byzantine faults are actually injected.</p>
+      </div>
+      <div class="formula-card">
+        <span>Canonical PBFT layout</span>
+        <strong>n = 3f + 1</strong>
+        <small id="formula-status">4 = 3 × 1 + 1</small>
+      </div>
+    </div>
+
+    <div class="preset-row">
+      <span>Presets</span>
+      <button class="preset" data-n="4" data-f="1">Standard · n=4, f=1</button>
+      <button class="preset" data-n="7" data-f="2">Extended · n=7, f=2</button>
+      <button class="preset" data-n="10" data-f="3">Large · n=10, f=3</button>
+    </div>
+
+    <div class="configuration-layout">
+      <form id="configuration-form" class="panel configuration-form" autocomplete="off">
+        <div class="panel-head"><h2>PBFT system</h2><span>Fault tolerance contract</span></div>
+        <div class="form-grid">
+          <label>Replica count <code>n</code>
+            <input id="cfg-replica-count" type="number" min="4" max="31" step="1" value="4">
+          </label>
+          <label>Maximum tolerated faults <code>f</code>
+            <input id="cfg-max-faulty" type="number" min="1" max="10" step="1" value="1">
+          </label>
+          <label>Initial view
+            <input id="cfg-initial-view" type="number" min="0" step="1" value="0">
+          </label>
+          <label>Primary policy
+            <select id="cfg-primary-policy">
+              <option value="round_robin">Round-robin · primary(view) = view mod n</option>
+            </select>
+          </label>
         </div>
-        <div id="scenario-list" class="scenario-list"></div>
-      </div>
 
-      <div class="controls">
-        <label>Repeat each scenario
-          <input id="repeat" type="number" min="1" max="100" value="1">
-        </label>
-        <label class="switch-line"><input id="stop-on-failure" type="checkbox">Stop on first failure</label>
-        <button id="run-selected" class="primary">Run selected</button>
-        <button id="run-all">Run all</button>
-        <button id="cancel" class="danger ghost">Cancel active suite</button>
-      </div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1>Distributed Safety Verification</h1>
-          <p id="connection">Connecting to test server…</p>
+        <div class="panel-head subsection"><h2>Timing</h2><span>Seconds</span></div>
+        <div class="form-grid">
+          <label>Progress timeout
+            <input id="cfg-progress-timeout" type="number" min="0.1" step="0.1" value="3.0">
+          </label>
+          <label>Safety decision timeout
+            <input id="cfg-decision-timeout" type="number" min="0.1" step="0.1" value="8.0">
+          </label>
+          <label>Safety heartbeat period
+            <input id="cfg-heartbeat" type="number" min="0.1" step="0.1" value="0.5">
+          </label>
+          <label>Client publish delay
+            <input id="cfg-client-delay" type="number" min="0" step="0.1" value="0.8">
+          </label>
         </div>
-        <div class="top-actions"><a id="report-link" class="button-link disabled" target="_blank">Open report</a></div>
-      </header>
 
-      <section class="metrics">
-        <article><span>Suite</span><strong id="suite-status">IDLE</strong></article>
-        <article><span>Scenario</span><strong id="active-scenario">—</strong></article>
-        <article><span>Current view</span><strong id="current-view">0</strong></article>
-        <article><span>Primary</span><strong id="primary-id">Replica 0</strong></article>
-        <article><span>Safety</span><strong id="safety-state">SAFE_INITIAL_STOP</strong></article>
-        <article><span>Output</span><strong id="safety-output">STOP ACTIVE</strong></article>
-      </section>
+        <div class="safety-lock">
+          <div>
+            <strong>Emergency-stop request</strong>
+            <span>The prototype keeps the requested value at <code>true</code>.</span>
+          </div>
+          <span class="pill green">STOP REQUESTED</span>
+        </div>
+      </form>
 
-      <section class="grid two">
-        <article class="panel">
-          <div class="panel-head"><h2>Protocol pipeline</h2><span id="elapsed">0.0 s</span></div>
-          <div id="pipeline" class="pipeline"></div>
-        </article>
+      <aside class="panel derived-panel">
+        <div class="panel-head"><h2>Derived configuration</h2><span>Calculated automatically</span></div>
+        <div class="derived-grid">
+          <div><span>Initial primary</span><strong id="derived-primary">Replica 0</strong></div>
+          <div><span>PREPARE threshold</span><strong id="derived-prepare">2</strong></div>
+          <div><span>COMMIT threshold</span><strong id="derived-commit">3</strong></div>
+          <div><span>VIEW-CHANGE threshold</span><strong id="derived-view-change">3</strong></div>
+        </div>
+        <div id="configuration-messages" class="configuration-messages"></div>
+        <div class="configuration-actions">
+          <button id="reset-configuration" type="button" class="ghost">Reset defaults</button>
+          <button id="continue-to-scenarios" type="button" class="primary">Continue to scenarios</button>
+        </div>
+      </aside>
+    </div>
+  </section>
 
-        <article class="panel">
-          <div class="panel-head"><h2>Assertions</h2><span id="assertion-summary">Waiting</span></div>
-          <div id="assertions" class="assertions empty">Assertions are evaluated when the scenario reaches its terminal condition.</div>
-        </article>
-      </section>
+  <section id="console-step" class="hidden">
+    <div class="shell">
+      <aside class="sidebar">
+        <button id="edit-configuration" class="back-button">← Edit configuration</button>
+        <div class="active-config-card">
+          <span>Active configuration</span>
+          <strong id="active-config-title">n=4 · f=1</strong>
+          <small id="active-config-detail">Primary 0 · quorum 3</small>
+        </div>
 
-      <section class="panel">
-        <div class="panel-head"><h2>Replica state</h2><span>Live ROS 2 status</span></div>
-        <div id="replicas" class="replicas"></div>
-      </section>
+        <div class="sidebar-section">
+          <div class="section-title scenario-title-row"><span>Scenarios</span><span id="catalog-count">0</span></div>
+          <input id="scenario-search" class="scenario-search" type="search" placeholder="Search scenarios…">
+          <div class="scenario-toolbar">
+            <button id="select-visible" class="tiny">Select visible</button>
+            <button id="clear-selection" class="tiny">Clear</button>
+            <span id="selected-count">0 selected</span>
+          </div>
+          <div id="scenario-list" class="scenario-list"></div>
+        </div>
 
-      <section class="grid two lower">
-        <article class="panel timeline-panel">
-          <div class="panel-head"><h2>Timeline</h2><span>Protocol events</span></div>
-          <div id="timeline" class="timeline"></div>
-        </article>
-        <article class="panel log-panel">
-          <div class="panel-head"><h2>Process log</h2><button id="clear-log" class="tiny">Clear view</button></div>
-          <pre id="live-log"></pre>
-        </article>
-      </section>
+        <div class="controls">
+          <label>Repeat each scenario
+            <input id="repeat" type="number" min="1" max="100" value="1">
+          </label>
+          <label class="switch-line"><input id="stop-on-failure" type="checkbox">Stop on first failure</label>
+          <button id="run-selected" class="primary">Run selected</button>
+          <button id="run-all">Run all compatible</button>
+          <button id="cancel" class="danger ghost">Cancel active suite</button>
+        </div>
+      </aside>
 
-      <section class="panel">
-        <div class="panel-head"><h2>Suite results</h2><span id="result-count">0 tests</span></div>
-        <div id="results" class="results empty">No suite has been executed yet.</div>
-      </section>
-    </main>
-  </div>
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1>Distributed Safety Verification</h1>
+            <p id="connection">Connecting to test server…</p>
+          </div>
+          <div class="top-actions"><a id="report-link" class="button-link disabled" target="_blank">Open report</a></div>
+        </header>
+
+        <section class="metrics">
+          <article><span>Suite</span><strong id="suite-status">IDLE</strong></article>
+          <article><span>Scenario</span><strong id="active-scenario">—</strong></article>
+          <article><span>Current view</span><strong id="current-view">0</strong></article>
+          <article><span>Primary</span><strong id="primary-id">Replica 0</strong></article>
+          <article><span>Safety</span><strong id="safety-state">SAFE_INITIAL_STOP</strong></article>
+          <article><span>Output</span><strong id="safety-output">STOP ACTIVE</strong></article>
+        </section>
+
+        <section class="grid two">
+          <article class="panel">
+            <div class="panel-head"><h2>Protocol pipeline</h2><span id="elapsed">0.0 s</span></div>
+            <div id="pipeline" class="pipeline"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head"><h2>Assertions</h2><span id="assertion-summary">Waiting</span></div>
+            <div id="assertions" class="assertions empty">Assertions are evaluated when the scenario reaches its terminal condition.</div>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Replica state</h2><span id="replica-summary">Live ROS 2 status</span></div>
+          <div id="replicas" class="replicas"></div>
+        </section>
+
+        <section class="grid two lower">
+          <article class="panel timeline-panel">
+            <div class="panel-head"><h2>Timeline</h2><span>Protocol events</span></div>
+            <div id="timeline" class="timeline"></div>
+          </article>
+          <article class="panel log-panel">
+            <div class="panel-head"><h2>Process log</h2><button id="clear-log" class="tiny">Clear view</button></div>
+            <pre id="live-log"></pre>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><h2>Suite results</h2><span id="result-count">0 tests</span></div>
+          <div id="results" class="results empty">No suite has been executed yet.</div>
+        </section>
+      </main>
+    </div>
+  </section>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

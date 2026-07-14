@@ -81,6 +81,9 @@ def public_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         "description": scenario.get("description", ""),
         "timeout_sec": scenario.get("timeout_sec", 15.0),
         "tags": scenario.get("tags", []),
+        "execution_mode": scenario.get("execution_mode", "legacy_n4_f1"),
+        "fault_profile": scenario.get("fault_profile"),
+        "requirements": scenario.get("requirements", {}),
     }
 
 

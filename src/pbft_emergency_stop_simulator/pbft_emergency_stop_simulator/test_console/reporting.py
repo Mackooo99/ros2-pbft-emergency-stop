@@ -59,6 +59,16 @@ def _render_html(suite: dict[str, Any]) -> str:
         )
 
     generated = datetime.now(timezone.utc).isoformat()
+    configuration = suite.get("configuration", {})
+    system = configuration.get("system", {})
+    derived = suite.get("derived_configuration", {})
+    config_summary = (
+        f"n={system.get('replica_count', '—')}, "
+        f"f={system.get('max_faulty', '—')}, "
+        f"initial view={system.get('initial_view', '—')}, "
+        f"primary={derived.get('primary_id', '—')}, "
+        f"commit quorum={derived.get('commit_threshold', '—')}"
+    )
 
     return f"""<!doctype html>
 <html lang='en'>
@@ -76,7 +86,7 @@ details{{background:#141b31;border:1px solid #263150;border-radius:12px;padding:
 </style>
 </head>
 <body><main>
-<div class='panel'><h1>PBFT Test Report</h1><p>Suite: {html.escape(str(suite.get('suite_id','')))}</p><p>Generated: {html.escape(generated)}</p></div>
+<div class='panel'><h1>PBFT Test Report</h1><p>Suite: {html.escape(str(suite.get('suite_id','')))}</p><p>Configuration: {html.escape(config_summary)}</p><p>Generated: {html.escape(generated)}</p></div>
 <div class='metrics'><div class='metric'>Executed<b>{len(results)}</b></div><div class='metric'>Passed<b>{passed}</b></div><div class='metric'>Failed<b>{failed}</b></div><div class='metric'>Timeout<b>{timed_out}</b></div></div>
 <div class='panel'><h2>Results</h2><table><thead><tr><th>Status</th><th>Scenario</th><th>Duration</th><th>ROS domain</th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>
 <div class='panel'><h2>Assertions</h2>{''.join(details)}</div>

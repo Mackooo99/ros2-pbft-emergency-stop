@@ -15,16 +15,26 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from .catalog import load_catalog, public_scenario
+from .configuration import (
+    default_configuration,
+    scenario_compatibility,
+    validate_configuration,
+)
 from .manager import ScenarioManager
 
 
 PACKAGE_NAME = "pbft_emergency_stop_simulator"
 
 
+class ConfigurationRequest(BaseModel):
+    configuration: dict[str, Any]
+
+
 class RunRequest(BaseModel):
     scenario_ids: list[str] = Field(min_length=1)
     repeat: int = Field(default=1, ge=1, le=100)
     stop_on_failure: bool = False
+    configuration: dict[str, Any]
 
 
 def create_app(
@@ -66,11 +76,48 @@ def create_app(
     async def index() -> FileResponse:
         return FileResponse(web_dir / "index.html")
 
-    @app.get("/api/scenarios")
-    async def scenarios() -> dict[str, Any]:
+    @app.get("/api/configuration/defaults")
+    async def configuration_defaults() -> dict[str, Any]:
+        return {"configuration": default_configuration()}
+
+    @app.post("/api/configuration/validate")
+    async def configuration_validate(
+        request: ConfigurationRequest,
+    ) -> dict[str, Any]:
+        return validate_configuration(request.configuration)
+
+    @app.post("/api/scenarios/compatible")
+    async def compatible_scenarios(
+        request: ConfigurationRequest,
+    ) -> dict[str, Any]:
+        validation = validate_configuration(request.configuration)
+        items = []
+        for scenario in catalog["scenarios"]:
+            public = public_scenario(scenario)
+            public["compatibility"] = scenario_compatibility(
+                scenario, validation
+            )
+            items.append(public)
         return {
             "version": catalog["version"],
-            "scenarios": [public_scenario(item) for item in catalog["scenarios"]],
+            "validation": validation,
+            "scenarios": items,
+        }
+
+    @app.get("/api/scenarios")
+    async def scenarios() -> dict[str, Any]:
+        validation = validate_configuration(default_configuration())
+        items = []
+        for scenario in catalog["scenarios"]:
+            public = public_scenario(scenario)
+            public["compatibility"] = scenario_compatibility(
+                scenario, validation
+            )
+            items.append(public)
+        return {
+            "version": catalog["version"],
+            "validation": validation,
+            "scenarios": items,
         }
 
     @app.get("/api/suites")
@@ -91,6 +138,7 @@ def create_app(
                 scenario_ids=request.scenario_ids,
                 repeat=request.repeat,
                 stop_on_failure=request.stop_on_failure,
+                configuration=request.configuration,
             )
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

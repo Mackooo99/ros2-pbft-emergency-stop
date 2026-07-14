@@ -1,4 +1,4 @@
-version: 2
+version: 3
 defaults:
   replica_count: 4
   timeout_sec: 15.0
@@ -13,6 +13,7 @@ defaults:
   client:
     enabled: false
   tags: []
+  execution_mode: legacy_n4_f1
 scenarios:
 - id: normal_consensus
   name: Normal consensus
@@ -78,7 +79,8 @@ scenarios:
 - id: normal_progress_timeout
   name: Normal progress cancels timeout
   category: Normal operation
-  description: All replicas use progress timers, but normal PBFT progress prevents a view change.
+  description: All replicas use progress timers, but normal PBFT progress prevents
+    a view change.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_progress_timeout_normal_scenario.launch.py
@@ -220,7 +222,8 @@ scenarios:
 - id: bad_digest
   name: Corrupted digest
   category: Byzantine backup faults
-  description: Replica 3 publishes internally invalid request digests; correct replicas reject them.
+  description: Replica 3 publishes internally invalid request digests; correct replicas
+    reject them.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_bad_digest_scenario.launch.py
@@ -290,7 +293,8 @@ scenarios:
 - id: duplicate_messages
   name: Duplicate protocol messages
   category: Byzantine backup faults
-  description: Replica 3 publishes identical PREPARE and COMMIT messages multiple times.
+  description: Replica 3 publishes identical PREPARE and COMMIT messages multiple
+    times.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_duplicate_scenario.launch.py
@@ -435,7 +439,8 @@ scenarios:
 - id: skip_prepare
   name: Skip PREPARE
   category: Byzantine backup faults
-  description: Replica 3 intentionally omits PREPARE while the correct replicas still commit.
+  description: Replica 3 intentionally omits PREPARE while the correct replicas still
+    commit.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_skip_prepare_scenario.launch.py
@@ -1016,7 +1021,8 @@ scenarios:
 - id: invalid_sender
   name: Invalid sender identifier
   category: Malformed protocol messages
-  description: Replica 3 transmits messages using sender_id=4, outside the configured replica range.
+  description: Replica 3 transmits messages using sender_id=4, outside the configured
+    replica range.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_invalid_sender_scenario.launch.py
@@ -1086,8 +1092,8 @@ scenarios:
 - id: insufficient_commit_quorum
   name: Insufficient COMMIT quorum
   category: Quorum and fail-safe
-  description: Two replicas skip COMMIT, so no distributed decision is allowed and the supervisor latches fail-safe
-    stop.
+  description: Two replicas skip COMMIT, so no distributed decision is allowed and
+    the supervisor latches fail-safe stop.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_insufficient_quorum_scenario.launch.py
@@ -1145,7 +1151,8 @@ scenarios:
 - id: manual_view_change
   name: Single manual VIEW-CHANGE
   category: View-change construction
-  description: Replica 2 publishes one controlled VIEW-CHANGE without a PREPARED certificate; quorum must not form.
+  description: Replica 2 publishes one controlled VIEW-CHANGE without a PREPARED certificate;
+    quorum must not form.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_manual_view_change_scenario.launch.py
@@ -1247,7 +1254,8 @@ scenarios:
 - id: prepared_value_preservation
   name: PREPARED value preservation
   category: View change
-  description: Three PREPARED certificates force the new primary to recover exactly the same request in view 1.
+  description: Three PREPARED certificates force the new primary to recover exactly
+    the same request in view 1.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_prepared_new_view_scenario.launch.py
@@ -1332,7 +1340,8 @@ scenarios:
 - id: primary_timeout_recovery
   name: Faulty primary recovery
   category: View change
-  description: Primary 0 skips PRE-PREPARE; replicas rotate to primary 1 and commit in view 1.
+  description: Primary 0 skips PRE-PREPARE; replicas rotate to primary 1 and commit
+    in view 1.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_primary_timeout_scenario.launch.py
@@ -1397,7 +1406,8 @@ scenarios:
 - id: insufficient_view_change_quorum
   name: Insufficient VIEW-CHANGE quorum
   category: View change
-  description: Only replicas 1 and 2 time out; no NEW-VIEW is allowed and safety falls back to FAIL_SAFE_STOP.
+  description: Only replicas 1 and 2 time out; no NEW-VIEW is allowed and safety falls
+    back to FAIL_SAFE_STOP.
   launch:
     package: pbft_emergency_stop_simulator
     file: pbft_insufficient_view_change_quorum_scenario.launch.py
@@ -1447,3 +1457,95 @@ scenarios:
     path: safety.emergency_stop
     op: eq
     value: true
+- id: configurable_normal_consensus
+  name: Configurable normal consensus
+  category: Configuration-aware scenarios
+  description: Generates n=3f+1 correct replicas from the active system configuration.
+  execution_mode: configurable
+  fault_profile: normal
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_configurable.launch.py
+  client:
+    enabled: true
+  tags:
+  - configurable
+  - dynamic cluster
+  - normal
+  timeout_sec: 15.0
+- id: configurable_one_silent
+  name: Configurable single silent replica
+  category: Configuration-aware scenarios
+  description: Makes the last replica silent while keeping the injected faults within
+    f.
+  execution_mode: configurable
+  fault_profile: one_silent
+  requirements:
+    min_f: 1
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_configurable.launch.py
+  client:
+    enabled: true
+  tags:
+  - configurable
+  - silent
+  - within fault bound
+  timeout_sec: 15.0
+- id: configurable_maximum_tolerated_faults
+  name: Maximum tolerated silent faults
+  category: Configuration-aware scenarios
+  description: Makes exactly f replicas silent and verifies that the remaining 2f+1
+    replicas can decide.
+  execution_mode: configurable
+  fault_profile: maximum_silent
+  requirements:
+    min_f: 1
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_configurable.launch.py
+  client:
+    enabled: true
+  tags:
+  - configurable
+  - maximum tolerated
+  - silent
+  timeout_sec: 18.0
+- id: configurable_beyond_fault_bound
+  name: Beyond fault bound fail-safe
+  category: Configuration-aware scenarios
+  description: Makes f+1 replicas silent; no decision is expected and safety must
+    enter FAIL_SAFE_STOP.
+  execution_mode: configurable
+  fault_profile: beyond_fault_bound_silent
+  requirements:
+    min_f: 1
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_configurable.launch.py
+  client:
+    enabled: true
+  tags:
+  - configurable
+  - beyond fault bound
+  - fail-safe
+  timeout_sec: 18.0
+- id: configurable_faulty_primary_recovery
+  name: Configurable faulty-primary recovery
+  category: Configuration-aware scenarios
+  description: The active primary skips PRE-PREPARE; backups form VIEW-CHANGE and
+    continue in the next view.
+  execution_mode: configurable
+  fault_profile: faulty_primary_recovery
+  requirements:
+    min_f: 1
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_configurable.launch.py
+  client:
+    enabled: true
+  tags:
+  - configurable
+  - view change
+  - primary recovery
+  timeout_sec: 20.0

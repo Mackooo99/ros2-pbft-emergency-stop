@@ -16,6 +16,11 @@ from uuid import uuid4
 import yaml
 
 from .catalog import scenario_map
+from .configuration import (
+    materialize_scenario,
+    scenario_compatibility,
+    validate_configuration,
+)
 from .reporting import write_suite_report
 
 
@@ -77,6 +82,7 @@ class ScenarioManager:
         scenario_ids: list[str],
         repeat: int = 1,
         stop_on_failure: bool = False,
+        configuration: dict[str, Any] | None = None,
     ) -> str:
         if self.active_task and not self.active_task.done():
             raise RuntimeError("Another PBFT test suite is already running.")
@@ -86,6 +92,25 @@ class ScenarioManager:
             raise ValueError(f"Unknown scenario IDs: {unknown}")
         if repeat < 1 or repeat > 100:
             raise ValueError("repeat must be in range 1..100")
+
+        validation = validate_configuration(configuration)
+        if not validation["valid"]:
+            raise ValueError("; ".join(validation["errors"]))
+
+        incompatible = []
+        for scenario_id in scenario_ids:
+            compatibility = scenario_compatibility(
+                self.scenarios[scenario_id], validation
+            )
+            if not compatibility["compatible"]:
+                incompatible.append(
+                    f"{scenario_id}: {compatibility['reason']}"
+                )
+        if incompatible:
+            raise ValueError(
+                "Selected scenarios are incompatible with the active configuration: "
+                + "; ".join(incompatible)
+            )
 
         suite_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid4().hex[:6]
         suite_dir = self.results_root / suite_id
@@ -102,6 +127,9 @@ class ScenarioManager:
             "scenario_ids": scenario_ids,
             "repeat": repeat,
             "stop_on_failure": stop_on_failure,
+            "configuration": deepcopy(validation["configuration"]),
+            "derived_configuration": deepcopy(validation["derived"]),
+            "configuration_warnings": list(validation["warnings"]),
             "queue": queue,
             "active_index": None,
             "active_scenario": None,
@@ -176,6 +204,12 @@ class ScenarioManager:
         run_dir: Path,
     ) -> dict[str, Any]:
         run_dir.mkdir(parents=True, exist_ok=False)
+        validation = validate_configuration(suite.get("configuration"))
+        scenario = materialize_scenario(
+            scenario=scenario,
+            validation=validation,
+            cluster_config_path=run_dir / "cluster_config.yaml",
+        )
         self.domain_counter += 1
         if self.domain_counter > 220:
             self.domain_counter = 70
@@ -313,6 +347,17 @@ class ScenarioManager:
 
         result["run_directory"] = str(run_dir)
         result["ros_domain_id"] = str(domain_id)
+        result["configuration"] = deepcopy(suite.get("configuration"))
+        result["derived_configuration"] = deepcopy(
+            suite.get("derived_configuration")
+        )
+        result["actual_byzantine_count"] = scenario.get(
+            "actual_byzantine_count"
+        )
+        result["faulty_replica_ids"] = scenario.get(
+            "faulty_replica_ids", []
+        )
+        result["within_fault_bound"] = scenario.get("within_fault_bound")
         return result
 
     async def _stream_output(
