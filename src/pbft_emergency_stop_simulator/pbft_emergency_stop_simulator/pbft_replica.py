@@ -281,6 +281,10 @@ class PBFTReplica(Node):
         self.new_view_sent: set[int] = set()
 
 
+        # Protocol-relevant payload of every accepted NEW-VIEW message.
+        # It is used to ignore identical duplicates and detect conflicts.
+        self.accepted_new_view_payloads: dict[int, tuple] = {}
+
         # Test-only timer used to invoke the same function that will
         # later be called by the real progress timeout.
         self.manual_view_change_timer = None
@@ -367,11 +371,23 @@ class PBFTReplica(Node):
             create_pbft_qos(),
         )
 
+
+        self.new_view_subscription = self.create_subscription(
+            NewView,
+            "/pbft/new_view",
+            self.new_view_callback,
+            create_pbft_qos(),
+        )
+
         
         self.status_timer = self.create_timer(
 	    1.0,
 	    self._publish_status,
 	    )
+
+
+
+
 
 
         if self.manual_view_change_target > self.current_view:
@@ -1292,6 +1308,38 @@ class PBFTReplica(Node):
         )    
 
 
+
+    def _new_view_payload(
+        self,
+        message: NewView,
+    ) -> tuple:
+        """Return the protocol-relevant NEW-VIEW payload."""
+        proof_payloads = tuple(
+            sorted(
+                (
+                    view_change.sender_id,
+                    self._view_change_payload(view_change),
+                )
+                for view_change
+                in message.view_change_messages
+            )
+        )
+
+        return (
+            message.sender_id,
+            message.new_view,
+            proof_payloads,
+            message.has_selected_request,
+            message.selected_from_prepared_certificate,
+            message.selected_prepared_view,
+            message.selected_sequence_number,
+            message.request_id,
+            message.request_digest,
+            message.emergency_stop,
+        )
+
+
+
     def _select_request_for_new_view(
         self,
         new_view: int,
@@ -1652,6 +1700,482 @@ class PBFTReplica(Node):
             f"request_id={message.request_id}, "
             f"digest={message.request_digest[:12]}..."
         )
+
+
+    def _validate_new_view_message(
+        self,
+        message: NewView,
+    ) -> tuple[PBFTInstance, int] | None:
+        """
+        Validate NEW-VIEW and return the selected instance and sequence.
+
+        No local protocol state is changed by this function.
+        """
+        if message.new_view <= self.current_view:
+            self.get_logger().warning(
+                "Rejected stale NEW-VIEW: "
+                f"sender={message.sender_id}, "
+                f"new_view={message.new_view}, "
+                f"current_view={self.current_view}."
+            )
+            return None
+
+        expected_primary = self._primary_for_view(
+            message.new_view
+        )
+
+        if message.sender_id != expected_primary:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because it was not sent by "
+                "the primary assigned to the target view: "
+                f"sender={message.sender_id}, "
+                f"new_view={message.new_view}, "
+                f"expected_primary={expected_primary}."
+            )
+            return None
+
+        view_change_messages = list(
+            message.view_change_messages
+        )
+
+        if (
+            len(view_change_messages)
+            < self.view_change_threshold
+        ):
+            self.get_logger().warning(
+                "Rejected NEW-VIEW without enough VIEW-CHANGE "
+                "proof messages: "
+                f"new_view={message.new_view}, "
+                f"received={len(view_change_messages)}, "
+                f"required={self.view_change_threshold}."
+            )
+            return None
+
+        proof_sender_ids = [
+            view_change.sender_id
+            for view_change in view_change_messages
+        ]
+
+        unique_proof_sender_ids = set(
+            proof_sender_ids
+        )
+
+        if (
+            len(unique_proof_sender_ids)
+            != len(proof_sender_ids)
+        ):
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because its proof contains "
+                "duplicate VIEW-CHANGE senders: "
+                f"senders={proof_sender_ids}."
+            )
+            return None
+
+        for view_change in view_change_messages:
+            if (
+                view_change.new_view
+                != message.new_view
+            ):
+                self.get_logger().warning(
+                    "Rejected NEW-VIEW because an embedded "
+                    "VIEW-CHANGE belongs to another target view: "
+                    f"new_view={message.new_view}, "
+                    f"proof_new_view={view_change.new_view}, "
+                    f"proof_sender={view_change.sender_id}."
+                )
+                return None
+
+            if not (
+                0
+                <= view_change.sender_id
+                < self.replica_count
+            ):
+                self.get_logger().warning(
+                    "Rejected NEW-VIEW because an embedded "
+                    "VIEW-CHANGE has an invalid sender_id: "
+                    f"{view_change.sender_id}."
+                )
+                return None
+
+            if not self._validate_view_change_certificate(
+                view_change
+            ):
+                self.get_logger().warning(
+                    "Rejected NEW-VIEW because an embedded "
+                    "VIEW-CHANGE certificate is invalid: "
+                    f"proof_sender={view_change.sender_id}, "
+                    f"new_view={message.new_view}."
+                )
+                return None
+
+        if not message.has_selected_request:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW without a selected request."
+            )
+            return None
+
+        if not message.request_id:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW with an empty request_id."
+            )
+            return None
+
+        if message.selected_sequence_number == 0:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW with "
+                "selected_sequence_number=0."
+            )
+            return None
+
+        if not message.emergency_stop:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW with emergency_stop=false."
+            )
+            return None
+
+        expected_digest = compute_request_digest(
+            message.request_id,
+            message.emergency_stop,
+        )
+
+        if message.request_digest != expected_digest:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because the selected request "
+                "digest is invalid: "
+                f"request_id={message.request_id}."
+            )
+            return None
+
+        expected_selection = (
+            self._select_request_for_new_view(
+                message.new_view,
+                view_change_messages,
+            )
+        )
+
+        if expected_selection is None:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because no safe request "
+                "selection could be derived from its proof."
+            )
+            return None
+
+        (
+            expected_instance,
+            expected_from_prepared,
+            expected_prepared_view,
+            expected_sequence_number,
+        ) = expected_selection
+
+        if (
+            message.selected_from_prepared_certificate
+            != expected_from_prepared
+        ):
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because "
+                "selected_from_prepared_certificate is incorrect: "
+                f"received="
+                f"{message.selected_from_prepared_certificate}, "
+                f"expected={expected_from_prepared}."
+            )
+            return None
+
+        if (
+            message.selected_prepared_view
+            != expected_prepared_view
+        ):
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because selected_prepared_view "
+                "does not match the safe selection: "
+                f"received={message.selected_prepared_view}, "
+                f"expected={expected_prepared_view}."
+            )
+            return None
+
+        received_instance = PBFTInstance(
+            request_id=message.request_id,
+            request_digest=message.request_digest,
+            emergency_stop=message.emergency_stop,
+        )
+
+        if received_instance != expected_instance:
+            self.get_logger().warning(
+                "Rejected NEW-VIEW because the selected request "
+                "does not match the safe request derived from the "
+                "VIEW-CHANGE proof: "
+                f"received_request_id={message.request_id}, "
+                f"expected_request_id="
+                f"{expected_instance.request_id}."
+            )
+            return None
+
+        if expected_from_prepared:
+            if (
+                message.selected_sequence_number
+                != expected_sequence_number
+            ):
+                self.get_logger().warning(
+                    "Rejected NEW-VIEW because the selected sequence "
+                    "does not match the highest PREPARED certificate: "
+                    f"received="
+                    f"{message.selected_sequence_number}, "
+                    f"expected={expected_sequence_number}."
+                )
+                return None
+        else:
+            # When no request was PREPARED, the new primary assigns
+            # the positive sequence number carried by NEW-VIEW.
+            if message.selected_prepared_view != 0:
+                self.get_logger().warning(
+                    "Rejected NEW-VIEW without a PREPARED "
+                    "certificate but with non-zero "
+                    "selected_prepared_view."
+                )
+                return None
+
+        return (
+            received_instance,
+            message.selected_sequence_number,
+        )
+
+
+
+    def _cancel_obsolete_protocol_activity(
+        self,
+        new_view: int,
+    ) -> None:
+        """Cancel timers and buffers belonging to older PBFT views."""
+        for key, timer in list(
+            self.delayed_prepare_timers.items()
+        ):
+            if key[0] < new_view:
+                timer.cancel()
+                self.destroy_timer(timer)
+
+                self.delayed_prepare_timers.pop(
+                    key,
+                    None,
+                )
+                self.prepare_scheduled.discard(key)
+
+        for key, timer in list(
+            self.delayed_commit_timers.items()
+        ):
+            if key[0] < new_view:
+                timer.cancel()
+                self.destroy_timer(timer)
+
+                self.delayed_commit_timers.pop(
+                    key,
+                    None,
+                )
+                self.commit_scheduled.discard(key)
+
+        for key in list(self.pending_prepares):
+            if key[0] < new_view:
+                self.pending_prepares.pop(
+                    key,
+                    None,
+                )
+
+        for key in list(self.pending_commits):
+            if key[0] < new_view:
+                self.pending_commits.pop(
+                    key,
+                    None,
+                )
+
+        if (
+            self.manual_view_change_timer is not None
+            and self.manual_view_change_target <= new_view
+        ):
+            self.manual_view_change_timer.cancel()
+            self.destroy_timer(
+                self.manual_view_change_timer
+            )
+            self.manual_view_change_timer = None
+
+
+
+
+    def _activate_new_view(
+        self,
+        message: NewView,
+        selected_instance: PBFTInstance,
+        selected_sequence_number: int,
+    ) -> None:
+        """Install a previously validated NEW-VIEW locally."""
+        old_view = self.current_view
+        old_primary = self.primary_id
+
+        new_view = message.new_view
+        new_primary = self._primary_for_view(
+            new_view
+        )
+
+        new_key = (
+            new_view,
+            selected_sequence_number,
+        )
+
+        existing_instance = self.instances.get(
+            new_key
+        )
+
+        if (
+            existing_instance is not None
+            and existing_instance
+            != selected_instance
+        ):
+            self.get_logger().error(
+                "Refusing to activate NEW-VIEW because a "
+                "conflicting local instance already exists: "
+                f"key={new_key}, "
+                f"existing_request_id="
+                f"{existing_instance.request_id}, "
+                f"selected_request_id="
+                f"{selected_instance.request_id}."
+            )
+            return
+
+        existing_cached_request = (
+            self.cached_client_requests.get(
+                selected_instance.request_id
+            )
+        )
+
+        if (
+            existing_cached_request is not None
+            and existing_cached_request
+            != selected_instance
+        ):
+            self.get_logger().error(
+                "Refusing to activate NEW-VIEW because the "
+                "selected request conflicts with the local cache: "
+                f"request_id={selected_instance.request_id}."
+            )
+            return
+
+        self._cancel_progress_timeout(
+            reason="valid NEW-VIEW accepted",
+        )
+
+        self._cancel_obsolete_protocol_activity(
+            new_view
+        )
+
+        self.cached_client_requests[
+            selected_instance.request_id
+        ] = selected_instance
+
+        self.instances[new_key] = selected_instance
+
+        # Prevent a repeated client REQUEST from starting another
+        # sequence while this selected request is being recovered.
+        self.processed_request_ids.add(
+            selected_instance.request_id
+        )
+
+        self.current_view = new_view
+        self.primary_id = new_primary
+        self.current_key = new_key
+
+        self.next_sequence_number = max(
+            self.next_sequence_number,
+            selected_sequence_number + 1,
+        )
+
+        self.phase = "NEW_VIEW_ACCEPTED"
+
+        role = (
+            "PRIMARY"
+            if self.node_id == self.primary_id
+            else "BACKUP"
+        )
+
+        self._publish_status(
+            "Valid NEW-VIEW accepted and installed locally: "
+            f"old_view={old_view}, "
+            f"new_view={new_view}, "
+            f"new_primary={new_primary}, "
+            f"role={role}."
+        )
+
+        self.get_logger().warning(
+            "Accepted and activated NEW-VIEW: "
+            f"sender={message.sender_id}, "
+            f"old_view={old_view}, "
+            f"new_view={new_view}, "
+            f"old_primary={old_primary}, "
+            f"new_primary={new_primary}, "
+            f"local_role={role}, "
+            f"sequence={selected_sequence_number}, "
+            f"request_id={selected_instance.request_id}, "
+            f"selected_from_prepared_certificate="
+            f"{message.selected_from_prepared_certificate}"
+        )
+
+
+    def new_view_callback(
+        self,
+        message: NewView,
+    ) -> None:
+        """Validate and install one incoming NEW-VIEW message."""
+        received_payload = self._new_view_payload(
+            message
+        )
+
+        existing_payload = (
+            self.accepted_new_view_payloads.get(
+                message.new_view
+            )
+        )
+
+        if existing_payload is not None:
+            if existing_payload == received_payload:
+                if message.sender_id != self.node_id:
+                    self.get_logger().warning(
+                        "Duplicate NEW-VIEW ignored: "
+                        f"sender={message.sender_id}, "
+                        f"new_view={message.new_view}."
+                    )
+            else:
+                self.get_logger().error(
+                    "Conflicting NEW-VIEW messages detected for "
+                    "the same target view: "
+                    f"new_view={message.new_view}."
+                )
+
+            return
+
+        validation_result = (
+            self._validate_new_view_message(
+                message
+            )
+        )
+
+        if validation_result is None:
+            return
+
+        (
+            selected_instance,
+            selected_sequence_number,
+        ) = validation_result
+
+        # Store the payload before changing current_view, so an
+        # identical DDS duplicate can be recognized afterwards.
+        self.accepted_new_view_payloads[
+            message.new_view
+        ] = received_payload
+
+        self._activate_new_view(
+            message,
+            selected_instance,
+            selected_sequence_number,
+        )
+
+
+
 
 
     def view_change_callback(
