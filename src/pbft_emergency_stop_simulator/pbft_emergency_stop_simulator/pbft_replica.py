@@ -1292,6 +1292,368 @@ class PBFTReplica(Node):
         )    
 
 
+    def _select_request_for_new_view(
+        self,
+        new_view: int,
+        view_change_messages: list[ViewChange],
+    ) -> tuple[
+        PBFTInstance,
+        bool,
+        int,
+        int,
+    ] | None:
+        """
+        Select the request which the new primary must preserve.
+
+        Returns:
+            (
+                selected_instance,
+                selected_from_prepared_certificate,
+                selected_prepared_view,
+                selected_sequence_number,
+            )
+        """
+        prepared_messages = [
+            message
+            for message in view_change_messages
+            if message.has_prepared_certificate
+        ]
+
+        # Safety rule: a value prepared in the highest prepared view
+        # must be preserved by the new primary.
+        if prepared_messages:
+            highest_prepared_view = max(
+                message.prepared_view
+                for message in prepared_messages
+            )
+
+            highest_view_certificates = [
+                message
+                for message in prepared_messages
+                if (
+                    message.prepared_view
+                    == highest_prepared_view
+                )
+            ]
+
+            candidate_payloads = {
+                (
+                    message.prepared_sequence_number,
+                    message.request_id,
+                    message.request_digest,
+                    message.emergency_stop,
+                )
+                for message in highest_view_certificates
+            }
+
+            if len(candidate_payloads) != 1:
+                self.get_logger().error(
+                    "Cannot construct NEW-VIEW because the highest "
+                    "PREPARED certificates contain conflicting "
+                    "requests: "
+                    f"new_view={new_view}, "
+                    f"highest_prepared_view="
+                    f"{highest_prepared_view}, "
+                    f"candidate_count="
+                    f"{len(candidate_payloads)}."
+                )
+                return None
+
+            (
+                selected_sequence_number,
+                request_id,
+                request_digest,
+                emergency_stop,
+            ) = next(iter(candidate_payloads))
+
+            instance = PBFTInstance(
+                request_id=request_id,
+                request_digest=request_digest,
+                emergency_stop=emergency_stop,
+            )
+
+            return (
+                instance,
+                True,
+                highest_prepared_view,
+                selected_sequence_number,
+            )
+
+        # No request was PREPARED in an older view. The new primary
+        # may start the one outstanding cached client request.
+        committed_request_ids = {
+            self.instances[key].request_id
+            for key in self.committed_instances
+            if key in self.instances
+        }
+
+        eligible_cached_requests = [
+            instance
+            for request_id, instance
+            in self.cached_client_requests.items()
+            if request_id not in committed_request_ids
+        ]
+
+        if len(eligible_cached_requests) != 1:
+            self.get_logger().error(
+                "Cannot construct NEW-VIEW without a PREPARED "
+                "certificate because exactly one outstanding cached "
+                "request is required: "
+                f"new_view={new_view}, "
+                f"eligible_request_count="
+                f"{len(eligible_cached_requests)}."
+            )
+            return None
+
+        selected_instance = eligible_cached_requests[0]
+
+        return (
+            selected_instance,
+            False,
+            0,
+            self.next_sequence_number,
+        )
+
+
+
+
+
+    def _build_new_view_message(
+        self,
+        new_view: int,
+        view_change_messages: list[ViewChange],
+    ) -> NewView | None:
+        """Build a NEW-VIEW message from a valid VIEW-CHANGE quorum."""
+        expected_primary = self._primary_for_view(
+            new_view
+        )
+
+        if self.node_id != expected_primary:
+            self.get_logger().error(
+                "A non-primary replica attempted to construct "
+                "NEW-VIEW: "
+                f"node_id={self.node_id}, "
+                f"new_view={new_view}, "
+                f"expected_primary={expected_primary}."
+            )
+            return None
+
+        if new_view <= self.current_view:
+            self.get_logger().warning(
+                "Refusing to construct stale NEW-VIEW: "
+                f"new_view={new_view}, "
+                f"current_view={self.current_view}."
+            )
+            return None
+
+        sender_ids = [
+            message.sender_id
+            for message in view_change_messages
+        ]
+
+        unique_sender_ids = set(sender_ids)
+
+        if len(unique_sender_ids) != len(sender_ids):
+            self.get_logger().error(
+                "Cannot construct NEW-VIEW because the proof "
+                "contains duplicate VIEW-CHANGE senders."
+            )
+            return None
+
+        if (
+            len(unique_sender_ids)
+            < self.view_change_threshold
+        ):
+            self.get_logger().warning(
+                "Cannot construct NEW-VIEW without a "
+                "VIEW-CHANGE quorum: "
+                f"new_view={new_view}, "
+                f"received={len(unique_sender_ids)}, "
+                f"required={self.view_change_threshold}."
+            )
+            return None
+
+        for view_change in view_change_messages:
+            if view_change.new_view != new_view:
+                self.get_logger().error(
+                    "Cannot construct NEW-VIEW because a proof "
+                    "belongs to another target view: "
+                    f"expected_new_view={new_view}, "
+                    f"received_new_view="
+                    f"{view_change.new_view}, "
+                    f"sender={view_change.sender_id}."
+                )
+                return None
+
+            if not (
+                0
+                <= view_change.sender_id
+                < self.replica_count
+            ):
+                self.get_logger().error(
+                    "Cannot construct NEW-VIEW because a proof "
+                    "contains an invalid sender: "
+                    f"sender={view_change.sender_id}."
+                )
+                return None
+
+            if not self._validate_view_change_certificate(
+                view_change
+            ):
+                self.get_logger().error(
+                    "Cannot construct NEW-VIEW because a "
+                    "VIEW-CHANGE certificate is invalid: "
+                    f"sender={view_change.sender_id}, "
+                    f"new_view={new_view}."
+                )
+                return None
+
+        selection = self._select_request_for_new_view(
+            new_view,
+            view_change_messages,
+        )
+
+        if selection is None:
+            return None
+
+        (
+            selected_instance,
+            selected_from_prepared_certificate,
+            selected_prepared_view,
+            selected_sequence_number,
+        ) = selection
+
+        new_view_message = NewView()
+
+        new_view_message.stamp = (
+            self.get_clock().now().to_msg()
+        )
+        new_view_message.sender_id = self.node_id
+        new_view_message.new_view = new_view
+        new_view_message.view_change_messages = list(
+            view_change_messages
+        )
+
+        new_view_message.has_selected_request = True
+        new_view_message.selected_from_prepared_certificate = (
+            selected_from_prepared_certificate
+        )
+        new_view_message.selected_prepared_view = (
+            selected_prepared_view
+        )
+        new_view_message.selected_sequence_number = (
+            selected_sequence_number
+        )
+        new_view_message.request_id = (
+            selected_instance.request_id
+        )
+        new_view_message.request_digest = (
+            selected_instance.request_digest
+        )
+        new_view_message.emergency_stop = (
+            selected_instance.emergency_stop
+        )
+
+        return new_view_message
+
+
+
+    def _maybe_publish_new_view(
+        self,
+        new_view: int,
+    ) -> None:
+        """Publish NEW-VIEW once the designated primary has a quorum."""
+        if new_view <= self.current_view:
+            return
+
+        expected_primary = self._primary_for_view(
+            new_view
+        )
+
+        # Only the primary assigned to the target view may publish
+        # the corresponding NEW-VIEW message.
+        if self.node_id != expected_primary:
+            return
+
+        if new_view in self.new_view_sent:
+            return
+
+        messages_for_view = self.view_change_messages.get(
+            new_view,
+            {},
+        )
+
+        if (
+            len(messages_for_view)
+            < self.view_change_threshold
+        ):
+            return
+
+        proof_sender_ids = sorted(
+            messages_for_view
+        )
+
+        proof_messages = [
+            messages_for_view[sender_id]
+            for sender_id in proof_sender_ids
+        ]
+
+        self.get_logger().info(
+            "VIEW-CHANGE quorum reached by the new primary: "
+            f"node_id={self.node_id}, "
+            f"new_view={new_view}, "
+            f"count={len(proof_sender_ids)}, "
+            f"threshold={self.view_change_threshold}, "
+            f"senders={proof_sender_ids}"
+        )
+
+        message = self._build_new_view_message(
+            new_view,
+            proof_messages,
+        )
+
+        if message is None:
+            self.get_logger().error(
+                "NEW-VIEW was not published because safe request "
+                "selection or proof validation failed: "
+                f"new_view={new_view}."
+            )
+            return
+
+        # Mark the view before publication to prevent duplicate
+        # NEW-VIEW messages if another VIEW-CHANGE arrives.
+        self.new_view_sent.add(new_view)
+
+        self.phase = "NEW_VIEW_PROPOSED"
+
+        self._publish_status(
+            "This replica formed a valid VIEW-CHANGE quorum and "
+            f"published NEW-VIEW for view {new_view}."
+        )
+
+        self.new_view_publisher.publish(message)
+
+        proof_senders = [
+            view_change.sender_id
+            for view_change in message.view_change_messages
+        ]
+
+        self.get_logger().warning(
+            "Published NEW-VIEW: "
+            f"sender={message.sender_id}, "
+            f"new_view={message.new_view}, "
+            f"proof_senders={sorted(proof_senders)}, "
+            f"selected_from_prepared_certificate="
+            f"{message.selected_from_prepared_certificate}, "
+            f"selected_prepared_view="
+            f"{message.selected_prepared_view}, "
+            f"selected_sequence="
+            f"{message.selected_sequence_number}, "
+            f"request_id={message.request_id}, "
+            f"digest={message.request_digest[:12]}..."
+        )
+
+
     def view_change_callback(
         self,
         message: ViewChange,
@@ -1372,6 +1734,9 @@ class PBFTReplica(Node):
             f"threshold={self.view_change_threshold}, "
             f"senders={sender_ids}"
         )
+
+
+        self._maybe_publish_new_view(message.new_view)
 
 
 
