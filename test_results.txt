@@ -1,0 +1,15 @@
+build/pbft_emergency_stop_simulator/pytest.xml: 3 tests, 3 errors, 0 failures, 0 skipped
+- pbft_emergency_stop_simulator test.test_copyright
+  <<< error message
+    collection failure
+  >>>
+- pbft_emergency_stop_simulator test.test_flake8
+  <<< error message
+    collection failure
+  >>>
+- pbft_emergency_stop_simulator test.test_pep257
+  <<< error message
+    collection failure
+  >>>
+
+Summary: 3 tests, 3 errors, 0 failures, 0 skipped
