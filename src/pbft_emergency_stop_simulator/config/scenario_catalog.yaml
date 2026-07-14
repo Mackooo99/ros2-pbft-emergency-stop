@@ -1,0 +1,1449 @@
+version: 2
+defaults:
+  replica_count: 4
+  timeout_sec: 15.0
+  supervisor:
+    enabled: true
+    parameters:
+      replica_count: 4
+      max_faulty: 1
+      decision_timeout_sec: 8.0
+      allow_confirmed_release: false
+      heartbeat_period_sec: 0.5
+  client:
+    enabled: false
+  tags: []
+scenarios:
+- id: normal_consensus
+  name: Normal consensus
+  category: Normal operation
+  description: Four correct replicas commit an emergency-stop request in view 0.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_simulator.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-normal-consensus
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+- id: normal_progress_timeout
+  name: Normal progress cancels timeout
+  category: Normal operation
+  description: All replicas use progress timers, but normal PBFT progress prevents a view change.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_progress_timeout_normal_scenario.launch.py
+  client:
+    enabled: false
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: no_view_change_votes
+    label: No VIEW-CHANGE was triggered
+    path: counts.view_change
+    op: eq
+    value: 0
+  - id: three_committed
+    label: At least three replicas committed in view 0
+    path: history.committed_replicas_by_view.0
+    op: length_gte
+    value: 3
+- id: silent_replica
+  name: Silent Byzantine replica
+  category: Byzantine backup faults
+  description: Replica 3 accepts PRE-PREPARE but remains silent.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_silent_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-silent
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: replica_detail_history.3
+      op: any_contains
+      value: silent Byzantine
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Replica 3 entered silent mode
+    path: replica_detail_history.3
+    op: any_contains
+    value: silent Byzantine
+  - id: no_prepare_from_faulty
+    label: Silent replica sent no PREPARE
+    path: counts.prepare_by_sender.3
+    op: not_exists
+  - id: no_commit_from_faulty
+    label: Silent replica sent no COMMIT
+    path: counts.commit_by_sender.3
+    op: not_exists
+  timeout_sec: 15.0
+- id: bad_digest
+  name: Corrupted digest
+  category: Byzantine backup faults
+  description: Replica 3 publishes internally invalid request digests; correct replicas reject them.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_bad_digest_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-bad-digest
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.invalid_digest_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: At least one corrupted digest from replica 3 was observed
+    path: counts.invalid_digest_by_sender.3
+    op: gte
+    value: 1
+  timeout_sec: 15.0
+- id: duplicate_messages
+  name: Duplicate protocol messages
+  category: Byzantine backup faults
+  description: Replica 3 publishes identical PREPARE and COMMIT messages multiple times.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_duplicate_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-duplicate
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.duplicate_by_sender.3
+      op: gte
+      value: 2
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Duplicate messages from replica 3 were observed
+    path: counts.duplicate_by_sender.3
+    op: gte
+    value: 2
+  - id: deduplicated_decision
+    label: Duplicates did not create extra decision confirmations
+    path: decision.confirmation_count
+    op: lte
+    value: 4
+  timeout_sec: 15.0
+- id: equivocation
+  name: Equivocating replica
+  category: Byzantine backup faults
+  description: Replica 3 sends conflicting protocol values to different recipients.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_equivocation_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-equivocation
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.unique_payload_count.prepare.3
+      op: gte
+      value: 2
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Replica 3 emitted at least two PREPARE value variants
+    path: counts.unique_payload_count.prepare.3
+    op: gte
+    value: 2
+  timeout_sec: 15.0
+- id: skip_prepare
+  name: Skip PREPARE
+  category: Byzantine backup faults
+  description: Replica 3 intentionally omits PREPARE while the correct replicas still commit.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_skip_prepare_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-skip-prepare
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: replica_detail_history.3
+      op: any_contains
+      value: skipped its PREPARE
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Replica 3 reported skipped PREPARE
+    path: replica_detail_history.3
+    op: any_contains
+    value: skipped its PREPARE
+  - id: no_prepare_from_faulty
+    label: Replica 3 sent no PREPARE
+    path: counts.prepare_by_sender.3
+    op: not_exists
+  timeout_sec: 15.0
+- id: skip_commit
+  name: Skip COMMIT
+  category: Byzantine backup faults
+  description: Replica 3 reaches PREPARED but intentionally omits COMMIT.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_skip_commit_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-skip-commit
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: replica_detail_history.3
+      op: any_contains
+      value: skipped its COMMIT
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Replica 3 reported skipped COMMIT
+    path: replica_detail_history.3
+    op: any_contains
+    value: skipped its COMMIT
+  - id: no_commit_from_faulty
+    label: Replica 3 sent no COMMIT
+    path: counts.commit_by_sender.3
+    op: not_exists
+  timeout_sec: 15.0
+- id: delayed_prepare
+  name: Delayed PREPARE
+  category: Timing faults
+  description: Replica 3 delays PREPARE by four seconds without preventing consensus.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_delayed_prepare_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-delayed-prepare
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.prepare_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Delayed PREPARE from replica 3 eventually arrived
+    path: counts.prepare_by_sender.3
+    op: gte
+    value: 1
+  - id: delay_respected
+    label: Replica 3 PREPARE was delayed
+    path: first_seen_sec.prepare_by_sender.3
+    op: gte
+    value: 3.5
+  timeout_sec: 18.0
+- id: delayed_commit
+  name: Delayed COMMIT
+  category: Timing faults
+  description: Replica 3 delays COMMIT by four seconds without preventing consensus.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_delayed_commit_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-delayed-commit
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.commit_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Delayed COMMIT from replica 3 eventually arrived
+    path: counts.commit_by_sender.3
+    op: gte
+    value: 1
+  - id: delay_respected
+    label: Replica 3 COMMIT was delayed
+    path: first_seen_sec.commit_by_sender.3
+    op: gte
+    value: 3.5
+  timeout_sec: 18.0
+- id: early_commit
+  name: Early COMMIT buffering
+  category: Message ordering faults
+  description: Replica 3 publishes COMMIT before its PREPARE/locally PREPARED condition.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_early_commit_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-early-commit
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.commit_by_sender.3
+      op: gte
+      value: 1
+    - path: counts.prepare_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Replica 3 COMMIT timestamp precedes its PREPARE timestamp
+    path: first_stamp_ns.commit_by_sender.3
+    op: lt_path
+    value_path: first_stamp_ns.prepare_by_sender.3
+  timeout_sec: 15.0
+- id: wrong_sequence
+  name: Wrong sequence number
+  category: Malformed protocol messages
+  description: Replica 3 publishes sequence number 0 in PREPARE/COMMIT messages.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_wrong_sequence_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-wrong-sequence
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.zero_sequence_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Zero sequence message from replica 3 was observed
+    path: counts.zero_sequence_by_sender.3
+    op: gte
+    value: 1
+  timeout_sec: 15.0
+- id: wrong_view
+  name: Wrong view number
+  category: Malformed protocol messages
+  description: Replica 3 publishes protocol messages for the wrong view.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_wrong_view_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-wrong-view
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.unexpected_view_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Wrong-view message from replica 3 was observed
+    path: counts.unexpected_view_by_sender.3
+    op: gte
+    value: 1
+  timeout_sec: 15.0
+- id: wrong_value
+  name: Wrong emergency-stop value
+  category: Malformed protocol messages
+  description: Replica 3 sends emergency_stop=false while the client requested true.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_wrong_value_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-wrong-value
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.value_mismatch_by_sender.3
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: Conflicting emergency-stop value from replica 3 was observed
+    path: counts.value_mismatch_by_sender.3
+    op: gte
+    value: 1
+  timeout_sec: 15.0
+- id: invalid_sender
+  name: Invalid sender identifier
+  category: Malformed protocol messages
+  description: Replica 3 transmits messages using sender_id=4, outside the configured replica range.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_invalid_sender_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-invalid-sender
+      publish_delay_sec: 0.8
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+    - path: counts.invalid_sender
+      op: gte
+      value: 1
+  assertions:
+  - id: decision_received
+    label: Confirmed PBFT decision was published
+    path: decision.committed
+    op: eq
+    value: true
+  - id: decision_view_zero
+    label: Decision remained in view 0
+    path: decision.view
+    op: eq
+    value: 0
+  - id: confirmation_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: final_view_zero
+    label: No view change occurred
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_new_view
+    label: No NEW-VIEW was published
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Effective emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+  - id: fault_observed
+    label: An out-of-range sender identifier was observed
+    path: counts.invalid_sender_values
+    op: contains
+    value: 4
+  timeout_sec: 15.0
+- id: insufficient_commit_quorum
+  name: Insufficient COMMIT quorum
+  category: Quorum and fail-safe
+  description: Two replicas skip COMMIT, so no distributed decision is allowed and the supervisor latches fail-safe
+    stop.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_insufficient_quorum_scenario.launch.py
+  client:
+    enabled: true
+    start_delay_sec: 0.8
+    parameters:
+      primary_id: 0
+      current_view: 0
+      emergency_stop: true
+      request_id: web-insufficient-commit
+      publish_delay_sec: 0.8
+  supervisor:
+    enabled: true
+    parameters:
+      replica_count: 4
+      max_faulty: 1
+      decision_timeout_sec: 6.0
+      allow_confirmed_release: false
+      heartbeat_period_sec: 0.5
+  timeout_sec: 12.0
+  complete_when:
+    mode: all
+    conditions:
+    - path: safety.state
+      op: eq
+      value: FAIL_SAFE_STOP
+    - path: safety.emergency_stop
+      op: eq
+      value: true
+  assertions:
+  - id: prepared_exists
+    label: At least three replicas reached PREPARED
+    path: history.prepared_replicas_by_view.0
+    op: length_gte
+    value: 3
+  - id: no_commit_quorum
+    label: No replica reached COMMITTED
+    path: history.committed_replicas_by_view.0
+    op: not_exists
+  - id: no_decision
+    label: No PBFT decision was published
+    path: decision
+    op: not_exists
+  - id: fail_safe
+    label: Safety supervisor latched FAIL_SAFE_STOP
+    path: safety.state
+    op: eq
+    value: FAIL_SAFE_STOP
+  - id: output_active
+    label: Emergency-stop output remains active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+- id: manual_view_change
+  name: Single manual VIEW-CHANGE
+  category: View-change construction
+  description: Replica 2 publishes one controlled VIEW-CHANGE without a PREPARED certificate; quorum must not form.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_manual_view_change_scenario.launch.py
+  client:
+    enabled: false
+  supervisor:
+    enabled: false
+  timeout_sec: 7.0
+  complete_when:
+    mode: all
+    conditions:
+    - path: counts.view_change
+      op: gte
+      value: 1
+  assertions:
+  - id: one_vote
+    label: Exactly one VIEW-CHANGE was published
+    path: counts.view_change
+    op: eq
+    value: 1
+  - id: sender_two
+    label: Replica 2 sent the VIEW-CHANGE
+    path: last.view_change.sender_id
+    op: eq
+    value: 2
+  - id: no_certificate
+    label: VIEW-CHANGE contains no PREPARED certificate
+    path: last.view_change.has_prepared_certificate
+    op: eq
+    value: false
+  - id: no_new_view
+    label: A single vote cannot create NEW-VIEW
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: view_unchanged
+    label: Current view remains 0
+    path: current_view
+    op: eq
+    value: 0
+  - id: no_decision
+    label: No client decision exists in this construction test
+    path: decision
+    op: not_exists
+- id: prepared_view_change_certificate
+  name: VIEW-CHANGE with PREPARED certificate
+  category: View-change construction
+  description: Replica 1 constructs one VIEW-CHANGE carrying its local PREPARED certificate.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_prepared_view_change_scenario.launch.py
+  client:
+    enabled: false
+  supervisor:
+    enabled: false
+  timeout_sec: 10.0
+  complete_when:
+    mode: all
+    conditions:
+    - path: last.view_change.has_prepared_certificate
+      op: eq
+      value: true
+  assertions:
+  - id: one_vote
+    label: Exactly one VIEW-CHANGE was published
+    path: counts.view_change
+    op: eq
+    value: 1
+  - id: sender_one
+    label: Replica 1 sent the VIEW-CHANGE
+    path: last.view_change.sender_id
+    op: eq
+    value: 1
+  - id: certificate_present
+    label: The PREPARED certificate is present
+    path: last.view_change.has_prepared_certificate
+    op: eq
+    value: true
+  - id: prepared_view_zero
+    label: Certificate belongs to view 0
+    path: last.view_change.prepared_view
+    op: eq
+    value: 0
+  - id: prepared_sequence_one
+    label: Certificate carries sequence 1
+    path: last.view_change.prepared_sequence_number
+    op: eq
+    value: 1
+  - id: prepared_request_preserved
+    label: Certificate identifies the prepared request
+    path: last.view_change.request_id
+    op: eq
+    value: prepared-certificate-test
+  - id: no_new_view
+    label: One VIEW-CHANGE vote cannot create NEW-VIEW
+    path: counts.new_view
+    op: eq
+    value: 0
+- id: prepared_value_preservation
+  name: PREPARED value preservation
+  category: View change
+  description: Three PREPARED certificates force the new primary to recover exactly the same request in view 1.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_prepared_new_view_scenario.launch.py
+  client:
+    enabled: false
+  timeout_sec: 15.0
+  supervisor:
+    enabled: true
+    parameters:
+      replica_count: 4
+      max_faulty: 1
+      decision_timeout_sec: 8.0
+      allow_confirmed_release: false
+      heartbeat_period_sec: 0.5
+  complete_when:
+    mode: all
+    conditions:
+    - path: current_view
+      op: eq
+      value: 1
+    - path: history.prepared_replicas_by_view.1
+      op: length_gte
+      value: 3
+    - path: safety.state
+      op: eq
+      value: FAIL_SAFE_STOP
+  assertions:
+  - id: prepared_old_view
+    label: At least three replicas were PREPARED in view 0
+    path: history.prepared_replicas_by_view.0
+    op: length_gte
+    value: 3
+  - id: three_certificates
+    label: Three VIEW-CHANGE messages carried PREPARED certificates
+    path: counts.view_change_with_prepared_certificate
+    op: gte
+    value: 3
+  - id: one_new_view
+    label: Exactly one NEW-VIEW was published
+    path: counts.new_view_by_view.1
+    op: eq
+    value: 1
+  - id: selected_from_certificate
+    label: NEW-VIEW selected the certified value
+    path: last.new_view.selected_from_prepared_certificate
+    op: eq
+    value: true
+  - id: request_preserved
+    label: The same request_id was selected
+    path: last.new_view.request_id
+    op: eq
+    value: prepared-new-view-test
+  - id: sequence_preserved
+    label: The certified sequence number was preserved
+    path: last.new_view.selected_sequence_number
+    op: eq
+    value: 1
+  - id: recovery_once
+    label: Exactly one recovery PRE-PREPARE was published
+    path: counts.recovery_pre_prepare
+    op: eq
+    value: 1
+  - id: prepared_new_view
+    label: At least three replicas became PREPARED in view 1
+    path: history.prepared_replicas_by_view.1
+    op: length_gte
+    value: 3
+  - id: no_decision
+    label: Two skip-COMMIT replicas prevent a decision
+    path: decision
+    op: not_exists
+  - id: fail_safe
+    label: Missing decision causes FAIL_SAFE_STOP
+    path: safety.state
+    op: eq
+    value: FAIL_SAFE_STOP
+  - id: output_active
+    label: Emergency-stop output remains active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+- id: primary_timeout_recovery
+  name: Faulty primary recovery
+  category: View change
+  description: Primary 0 skips PRE-PREPARE; replicas rotate to primary 1 and commit in view 1.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_primary_timeout_scenario.launch.py
+  client:
+    enabled: false
+  supervisor:
+    enabled: false
+  timeout_sec: 18.0
+  complete_when:
+    mode: all
+    conditions:
+    - path: decision.committed
+      op: eq
+      value: true
+    - path: safety.state
+      op: eq
+      value: CONFIRMED_STOP
+  assertions:
+  - id: view_change_quorum
+    label: VIEW-CHANGE quorum contains replicas 1, 2 and 3
+    path: counts.view_change_unique_senders_by_view.1
+    op: set_eq
+    value:
+    - 1
+    - 2
+    - 3
+  - id: one_new_view
+    label: Exactly one NEW-VIEW was published
+    path: counts.new_view_by_view.1
+    op: eq
+    value: 1
+  - id: new_primary
+    label: Replica 1 became primary
+    path: primary_id
+    op: eq
+    value: 1
+  - id: one_recovery
+    label: Exactly one recovery PRE-PREPARE was published
+    path: counts.recovery_pre_prepare
+    op: eq
+    value: 1
+  - id: decision_view_one
+    label: Decision was committed in view 1
+    path: decision.view
+    op: eq
+    value: 1
+  - id: decision_quorum
+    label: Decision has at least three confirmations
+    path: decision.confirmation_count
+    op: gte
+    value: 3
+  - id: safety_confirmed
+    label: Safety supervisor reached CONFIRMED_STOP
+    path: safety.state
+    op: eq
+    value: CONFIRMED_STOP
+  - id: output_active
+    label: Emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true
+- id: insufficient_view_change_quorum
+  name: Insufficient VIEW-CHANGE quorum
+  category: View change
+  description: Only replicas 1 and 2 time out; no NEW-VIEW is allowed and safety falls back to FAIL_SAFE_STOP.
+  launch:
+    package: pbft_emergency_stop_simulator
+    file: pbft_insufficient_view_change_quorum_scenario.launch.py
+  client:
+    enabled: false
+  supervisor:
+    enabled: false
+  timeout_sec: 12.0
+  complete_when:
+    mode: all
+    conditions:
+    - path: safety.state
+      op: eq
+      value: FAIL_SAFE_STOP
+    - path: safety.emergency_stop
+      op: eq
+      value: true
+  assertions:
+  - id: two_votes
+    label: Exactly replicas 1 and 2 requested view 1
+    path: counts.view_change_unique_senders_by_view.1
+    op: set_eq
+    value:
+    - 1
+    - 2
+  - id: no_new_view
+    label: NEW-VIEW was not published without quorum
+    path: counts.new_view
+    op: eq
+    value: 0
+  - id: no_decision
+    label: No distributed decision was published
+    path: decision
+    op: not_exists
+  - id: view_zero
+    label: Replicas did not install view 1
+    path: current_view
+    op: eq
+    value: 0
+  - id: fail_safe
+    label: Safety supervisor latched FAIL_SAFE_STOP
+    path: safety.state
+    op: eq
+    value: FAIL_SAFE_STOP
+  - id: output_active
+    label: Fail-safe emergency-stop output is active
+    path: safety.emergency_stop
+    op: eq
+    value: true

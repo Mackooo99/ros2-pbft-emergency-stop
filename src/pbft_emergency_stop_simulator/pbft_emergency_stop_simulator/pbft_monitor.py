@@ -62,6 +62,8 @@ class PBFTMonitor(Node):
         self.max_faulty = int(
             self.get_parameter("max_faulty").value
         )
+        self._validate_configuration()
+
         self.commit_threshold = 2 * self.max_faulty + 1
 
         self.latest_status: dict[int, ReplicaStatus] = {}
@@ -118,6 +120,26 @@ class PBFTMonitor(Node):
             f"f={self.max_faulty}, "
             f"consensus_threshold={self.commit_threshold}"
         )
+
+
+
+    def _validate_configuration(self) -> None:
+        """Validate the PBFT configuration observed by the monitor."""
+        if self.max_faulty < 0:
+            raise ValueError(
+                "max_faulty must be non-negative."
+            )
+
+        expected_replica_count = 3 * self.max_faulty + 1
+
+        if self.replica_count != expected_replica_count:
+            raise ValueError(
+                "Invalid PBFT monitor configuration: "
+                f"n={self.replica_count}, "
+                f"f={self.max_faulty}. "
+                "This simulator currently requires "
+                f"n = 3f + 1 = {expected_replica_count}."
+            )
 
     def status_callback(self, status: ReplicaStatus) -> None:
         """Store and evaluate one replica status update."""

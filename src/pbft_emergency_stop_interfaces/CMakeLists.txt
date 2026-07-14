@@ -13,6 +13,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PBFTMessage.msg"
   "msg/ReplicaStatus.msg"
   "msg/PBFTDecision.msg"
+  "msg/ViewChange.msg"
+  "msg/NewView.msg"
   DEPENDENCIES builtin_interfaces
 )
 
