@@ -72,6 +72,10 @@ setup(
                 "pbft_emergency_stop_simulator.scenario_evaluator:main"
             ),
             (
+                "performance_monitor = "
+                "pbft_emergency_stop_simulator.performance_monitor:main"
+            ),
+            (
                 "pbft_test_console = "
                 "pbft_emergency_stop_simulator.test_console.web_app:main"
             ),

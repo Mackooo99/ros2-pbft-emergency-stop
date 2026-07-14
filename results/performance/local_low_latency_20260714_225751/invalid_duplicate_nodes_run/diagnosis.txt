@@ -1,0 +1,13 @@
+Merenje nije validno.
+
+Tokom testa bilo je aktivno pet paralelnih kompleta PBFT čvorova sa istim
+imenima. Različite instance replika i monitora obrađivale su isti zahtev.
+
+Indikatori:
+- decision_view = 0
+- views_seen = 0,1
+- REQUEST -> decision = 81.806 ms
+- REQUEST -> prvi VIEW-CHANGE = 365.459 ms
+- total_protocol_messages = 60
+
+Rezultat se ne koristi za analizu performansi.

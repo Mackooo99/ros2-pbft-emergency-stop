@@ -1,0 +1,30 @@
+
+========================================================================
+normal_results.csv
+========================================================================
+Broj merenja: 1
+
+Merenje 1:
+  result: COMMITTED
+  initial_view: 0
+  decision_view: 0
+  request_to_decision_ms: 33.649
+  request_to_first_view_change_ms: 
+  first_view_change_to_new_view_ms: 
+  new_view_to_decision_ms: 
+  total_protocol_messages: 10
+
+========================================================================
+view_change_results.csv
+========================================================================
+Broj merenja: 1
+
+Merenje 1:
+  result: COMMITTED
+  initial_view: 0
+  decision_view: 0
+  request_to_decision_ms: 81.806
+  request_to_first_view_change_ms: 365.459
+  first_view_change_to_new_view_ms: 
+  new_view_to_decision_ms: 
+  total_protocol_messages: 60

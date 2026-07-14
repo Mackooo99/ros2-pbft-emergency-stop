@@ -1,0 +1,49 @@
+Starting >>> pbft_emergency_stop_interfaces
+Finished <<< pbft_emergency_stop_interfaces [0.07s]
+Starting >>> pbft_emergency_stop_simulator
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-7.4.4, pluggy-1.4.0
+cachedir: /home/maja/pbft_ws/build/pbft_emergency_stop_simulator/.pytest_cache
+rootdir: /home/maja/pbft_ws/src/pbft_emergency_stop_simulator
+plugins: colcon-core-0.20.1, cov-4.1.0
+collected 12 items / 3 errors
+
+==================================== ERRORS ====================================
+___________________ ERROR collecting test/test_copyright.py ____________________
+ImportError while importing test module '/home/maja/pbft_ws/src/pbft_emergency_stop_simulator/test/test_copyright.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+test/test_copyright.py:15: in <module>
+    from ament_copyright.main import main
+E   ModuleNotFoundError: No module named 'ament_copyright'
+_____________________ ERROR collecting test/test_flake8.py _____________________
+ImportError while importing test module '/home/maja/pbft_ws/src/pbft_emergency_stop_simulator/test/test_flake8.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+test/test_flake8.py:15: in <module>
+    from ament_flake8.main import main_with_errors
+E   ModuleNotFoundError: No module named 'ament_flake8'
+_____________________ ERROR collecting test/test_pep257.py _____________________
+ImportError while importing test module '/home/maja/pbft_ws/src/pbft_emergency_stop_simulator/test/test_pep257.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+test/test_pep257.py:15: in <module>
+    from ament_pep257.main import main
+E   ModuleNotFoundError: No module named 'ament_pep257'
+- generated xml file: /home/maja/pbft_ws/build/pbft_emergency_stop_simulator/pytest.xml -
+=========================== short test summary info ============================
+ERROR test/test_copyright.py
+ERROR test/test_flake8.py
+ERROR test/test_pep257.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!!
+============================== 3 errors in 0.25s ===============================
+Failed   <<< pbft_emergency_stop_simulator [1.24s, exited with code 2]
+
+Summary: 1 package finished [1.65s]
+  1 package failed: pbft_emergency_stop_simulator
