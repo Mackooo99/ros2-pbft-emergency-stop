@@ -73,7 +73,7 @@ class PBFTReplica(Node):
         self.declare_parameter("manual_view_change_delay_sec", 2.0)
         self.declare_parameter("enable_progress_timeout", False)
         self.declare_parameter("progress_timeout_sec", 3.0)
-
+        self.declare_parameter("new_view_pre_prepare_delay_sec", 0.5)
 
 
 
@@ -97,6 +97,9 @@ class PBFTReplica(Node):
         )
         self.progress_timeout_sec = float(
             self.get_parameter("progress_timeout_sec").value
+        )
+        self.new_view_pre_prepare_delay_sec = float(
+            self.get_parameter("new_view_pre_prepare_delay_sec").value
         )
 
         self.is_byzantine = bool(
@@ -159,6 +162,10 @@ class PBFTReplica(Node):
                 "than current_view."
             )
         
+        if self.new_view_pre_prepare_delay_sec <= 0.0:
+            raise ValueError(
+                "new_view_pre_prepare_delay_sec must be positive."
+            )
 
 
         allowed_behaviors = {
@@ -280,6 +287,20 @@ class PBFTReplica(Node):
         # Views for which the new primary has already published NEW-VIEW.
         self.new_view_sent: set[int] = set()
 
+
+
+        # PBFT instances for which the new primary already published
+        # the recovery PRE-PREPARE after accepting NEW-VIEW.
+        self.recovery_pre_prepare_sent: set[
+            MessageKey
+        ] = set()
+
+        # One-shot timers used to delay recovery PRE-PREPARE until
+        # the replicas have received and activated NEW-VIEW.
+        self.recovery_pre_prepare_timers: dict[
+            MessageKey,
+            object,
+        ] = {}
 
         # Protocol-relevant payload of every accepted NEW-VIEW message.
         # It is used to ignore identical duplicates and detect conflicts.
@@ -428,7 +449,9 @@ class PBFTReplica(Node):
             f", enable_progress_timeout="
             f"{self.enable_progress_timeout}, "
             f"progress_timeout_sec="
-            f"{self.progress_timeout_sec}"
+            f"{self.progress_timeout_sec}, "
+            f"new_view_pre_prepare_delay_sec="
+            f"{self.new_view_pre_prepare_delay_sec} "
         )
         
         self._publish_status(self.status_detail)
@@ -1971,6 +1994,23 @@ class PBFTReplica(Node):
                 )
                 self.commit_scheduled.discard(key)
 
+
+
+
+        for key, timer in list(
+            self.recovery_pre_prepare_timers.items()
+        ):
+            if key[0] < new_view:
+                timer.cancel()
+                self.destroy_timer(timer)
+
+                self.recovery_pre_prepare_timers.pop(
+                    key,
+                    None,
+                )
+
+
+
         for key in list(self.pending_prepares):
             if key[0] < new_view:
                 self.pending_prepares.pop(
@@ -1994,6 +2034,183 @@ class PBFTReplica(Node):
                 self.manual_view_change_timer
             )
             self.manual_view_change_timer = None
+
+
+
+
+    def _schedule_recovery_pre_prepare(
+        self,
+        key: MessageKey,
+    ) -> None:
+        """Schedule PRE-PREPARE after the new primary installs NEW-VIEW."""
+        view, sequence_number = key
+
+        if view != self.current_view:
+            self.get_logger().warning(
+                "Recovery PRE-PREPARE was not scheduled because "
+                "the instance does not belong to the current view: "
+                f"key={key}, current_view={self.current_view}."
+            )
+            return
+
+        if self.node_id != self.primary_id:
+            return
+
+        if key in self.recovery_pre_prepare_sent:
+            return
+
+        if key in self.recovery_pre_prepare_timers:
+            return
+
+        if key not in self.instances:
+            self.get_logger().error(
+                "Recovery PRE-PREPARE was not scheduled because "
+                f"the selected instance does not exist: key={key}."
+            )
+            return
+
+        if self._is_skip_pre_prepare_byzantine():
+            self.phase = "FAULTY_PRIMARY"
+
+            self._publish_status(
+                "The new Byzantine primary intentionally skipped "
+                "the recovery PRE-PREPARE."
+            )
+
+            self.get_logger().warning(
+                "SKIP-PRE-PREPARE BYZANTINE BEHAVIOR: "
+                f"new_primary={self.node_id}, "
+                f"view={view}, "
+                f"sequence={sequence_number}. "
+                "No recovery PRE-PREPARE will be published."
+            )
+            return
+
+        timer = self.create_timer(
+            self.new_view_pre_prepare_delay_sec,
+            lambda scheduled_key=key: (
+                self._publish_recovery_pre_prepare(
+                    scheduled_key
+                )
+            ),
+        )
+
+        self.recovery_pre_prepare_timers[
+            key
+        ] = timer
+
+        self.get_logger().info(
+            "Recovery PRE-PREPARE scheduled by the new primary: "
+            f"node_id={self.node_id}, "
+            f"view={view}, "
+            f"sequence={sequence_number}, "
+            f"delay_sec="
+            f"{self.new_view_pre_prepare_delay_sec:.3f}"
+        )
+
+
+
+    def _publish_recovery_pre_prepare(
+        self,
+        key: MessageKey,
+    ) -> None:
+        """Publish the request selected by an accepted NEW-VIEW."""
+        timer = self.recovery_pre_prepare_timers.pop(
+            key,
+            None,
+        )
+
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+        if key in self.recovery_pre_prepare_sent:
+            return
+
+        view, sequence_number = key
+
+        if view != self.current_view:
+            self.get_logger().warning(
+                "Obsolete recovery PRE-PREPARE was cancelled: "
+                f"key={key}, "
+                f"current_view={self.current_view}."
+            )
+            return
+
+        if self.node_id != self.primary_id:
+            self.get_logger().warning(
+                "Recovery PRE-PREPARE was cancelled because this "
+                "replica is no longer the active primary: "
+                f"node_id={self.node_id}, "
+                f"primary_id={self.primary_id}, "
+                f"view={self.current_view}."
+            )
+            return
+
+        instance = self.instances.get(key)
+
+        if instance is None:
+            self.get_logger().error(
+                "Recovery PRE-PREPARE could not be published "
+                f"because the selected instance is missing: key={key}."
+            )
+            return
+
+        pre_prepare = PBFTMessage()
+
+        pre_prepare.stamp = (
+            self.get_clock().now().to_msg()
+        )
+        pre_prepare.message_type = (
+            PBFTMessage.PRE_PREPARE
+        )
+        pre_prepare.sender_id = self.node_id
+        pre_prepare.recipient_id = -1
+        pre_prepare.view = view
+        pre_prepare.sequence_number = (
+            sequence_number
+        )
+        pre_prepare.request_id = (
+            instance.request_id
+        )
+        pre_prepare.request_digest = (
+            instance.request_digest
+        )
+        pre_prepare.emergency_stop = (
+            instance.emergency_stop
+        )
+
+        # Mark before publication so a repeated callback cannot
+        # produce a second PRE-PREPARE for the same instance.
+        self.recovery_pre_prepare_sent.add(key)
+
+        self.current_key = key
+        self.phase = "PRE_PREPARED"
+
+        self._publish_status(
+            "New primary published recovery PRE-PREPARE "
+            "for the request selected by NEW-VIEW."
+        )
+
+        self.pre_prepare_publisher.publish(
+            pre_prepare
+        )
+
+        self._arm_progress_timeout(
+            instance.request_id,
+            reason=(
+                "new primary published recovery PRE-PREPARE"
+            ),
+        )
+
+        self.get_logger().warning(
+            "Published recovery PRE-PREPARE: "
+            f"sender={pre_prepare.sender_id}, "
+            f"view={pre_prepare.view}, "
+            f"sequence={pre_prepare.sequence_number}, "
+            f"request_id={pre_prepare.request_id}, "
+            f"digest={pre_prepare.request_digest[:12]}..."
+        )
 
 
 
@@ -2087,6 +2304,9 @@ class PBFTReplica(Node):
 
         self.phase = "NEW_VIEW_ACCEPTED"
 
+
+        
+
         role = (
             "PRIMARY"
             if self.node_id == self.primary_id
@@ -2114,6 +2334,22 @@ class PBFTReplica(Node):
             f"selected_from_prepared_certificate="
             f"{message.selected_from_prepared_certificate}"
         )
+
+        # The recovered request is now active in the new view.
+        # Start a fresh timer so another stalled primary can cause
+        # a later view change.
+        self._arm_progress_timeout(
+            selected_instance.request_id,
+            reason="valid NEW-VIEW installed",
+        )
+
+        if self.node_id == self.primary_id:
+            self._schedule_recovery_pre_prepare(
+                new_key
+            )
+
+
+
 
 
     def new_view_callback(
@@ -3537,6 +3773,10 @@ class PBFTReplica(Node):
 
         instance = self.instances[key]
         view, sequence_number = key
+
+
+
+
 
         self._cancel_progress_timeout(
             reason="request reached COMMITTED",
